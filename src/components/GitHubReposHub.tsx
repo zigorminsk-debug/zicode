@@ -40,20 +40,15 @@ const ghHeaders = (token: string) => ({
   ...(token.trim() ? { Authorization: `Bearer ${token.trim()}` } : {}),
 })
 
-/** Корректное UTF-8 декодирование base64 из GitHub Contents API */
-export const decodeBase64Utf8 = (base64: string): string => {
-  try {
-    const binary = atob(base64.replace(/\n/g, ""))
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-    return new TextDecoder("utf-8").decode(bytes)
-  } catch {
-    return ""
-  }
-}
+// Текстовые файлы: поддерживаем ЛЮБЫЕ расширения исходников (включая проекты 1С: .bsl/.mdo/.os и Go/.nsi).
+const TEXT_EXT_RE =
+  /\.(ts|tsx|js|jsx|cjs|mjs|json|jsonc|md|mdx|txt|rst|py|pyi|ipynb|html|htm|css|scss|sass|less|styl|yml|yaml|sh|bash|zsh|fish|bat|cmd|ps1|kt|kts|java|gradle|groovy|xml|xsd|xsl|toml|ini|cfg|conf|env|properties|sql|go|rs|rb|php|cs|vb|fs|cpp|cc|cxx|c|h|hpp|swift|dart|lua|pl|r|jl|ex|exs|erl|hs|scala|clj|asm|s|vue|svelte|astro|graphql|gql|proto|thrift|nsi|nsh|bsl|mdo|os|v8i|\.cd|dc|sln|csproj|vcxproj|pbxproj|storyboard|xib|plist|desktop|service|gitignore|gitattributes|editorconfig|dockerignore|npmrc|nvmrc|babelrc|eslintrc|prettierrc|lock)$/i
 
-const SOURCE_FILE_RE =
-  /\.(ts|tsx|js|jsx|cjs|mjs|json|md|mdx|py|html|css|scss|yml|yaml|sh|bat|ps1|txt|kt|java|gradle|xml|toml|ini|sql|go|rs|rb|php|cs|cpp|c|h|swift|dart)$/i
+const TEXT_BASENAMES =
+  /^(readme|license|licence|notice|changelog|contributing|code_of_conduct|security|authors|dockerfile|makefile|gnumakefile|procfile|vagrantfile|jenkinsfile|rakefile|gemfile|brewfile|cargo|go|package|composer|requirements|pipfile|poetry|pyproject|setup|tsconfig|vite\.config|webpack\.config|rollup\.config|esbuild|electron-builder|agents|opencode)(\.[\w-]+)?$/i
+
+const BINARY_EXT_RE =
+  /\.(png|jpe?g|gif|ico|icns|bmp|tiff?|psd|ai|eps|webp|avif|pdf|zip|gz|tgz|bz2|xz|7z|rar|tar|exe|msi|dll|so|dylib|bin|dat|class|jar|war|apk|aab|ipa|keystore|jks|p12|pfx|woff2?|ttf|otf|eot|mp[34]|wav|ogg|flac|mov|avi|mkv|webm|iso|dmg|db|sqlite3?|epf|erf|cf|cfc|epf|mxl|lockb)$/i
 
 const IGNORED_PREFIXES = [
   "node_modules/",
@@ -66,61 +61,146 @@ const IGNORED_PREFIXES = [
   "__pycache__/",
   ".gradle/",
   "android/app/build/",
+  ".next/",
+  ".nuxt/",
+  "target/",
+  "out/",
 ]
+
+/** Является ли путь текстовым файлом, который имеет смысл показывать агенту */
+export function isTextRepoPath(path: string): boolean {
+  const base = path.split("/").pop() || path
+  if (BINARY_EXT_RE.test(base)) return false
+  if (TEXT_BASENAMES.test(base)) return true
+  return TEXT_EXT_RE.test(base) || !/\.[a-z0-9]{1,8}$/i.test(base)
+}
+
+/** Корректное UTF-8 декодирование base64 из GitHub Contents API */
+export const decodeBase64Utf8 = (base64: string): string => {
+  try {
+    const binary = atob(base64.replace(/\n/g, ""))
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    return new TextDecoder("utf-8").decode(bytes)
+  } catch {
+    return ""
+  }
+}
+
+export interface RepoTreeInfo {
+  branch: string
+  /** Все файлы ветки (включая бинарные) */
+  allPaths: string[]
+  /** Только текстовые/исходные файлы, пригодные для анализа */
+  textPaths: string[]
+  truncated: boolean
+}
+
+/** Читает дерево файлов ветки репозитория */
+export async function fetchRepoTree(token: string, repo: string, branch: string): Promise<RepoTreeInfo> {
+  const res = await fetch(
+    `https://api.github.com/repos/${repo.trim()}/git/trees/${encodeURIComponent(branch.trim() || "main")}?recursive=1`,
+    { headers: ghHeaders(token) },
+  )
+  const data: any = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    if (res.status === 403 || res.status === 429) {
+      throw new Error(
+        `GitHub ограничил запросы (HTTP ${res.status}). Без токена доступно 60 запросов в час — вставьте Personal Access Token в поле выше.`,
+      )
+    }
+    throw new Error(data?.message || `Не удалось прочитать дерево ветки «${branch}» (HTTP ${res.status})`)
+  }
+  const blobs = (Array.isArray(data.tree) ? data.tree : []).filter(
+    (item: any) =>
+      item && item.type === "blob" && !IGNORED_PREFIXES.some((pref) => String(item.path).startsWith(pref)),
+  )
+  const allPaths = blobs.map((b: any) => String(b.path))
+  const textPaths = blobs
+    .filter((b: any) => (b.size ?? 0) < 400000 && isTextRepoPath(String(b.path)))
+    .map((b: any) => String(b.path))
+  return { branch, allPaths, textPaths, truncated: Boolean(data.truncated) }
+}
+
+/**
+ * Определяет ветку, в которой реально лежит проект.
+ * Часто `main` содержит только README, а код — в рабочей ветке (например arena/...).
+ */
+export async function detectBestBranch(
+  token: string,
+  repo: string,
+  branches: string[],
+  preferred: string,
+): Promise<RepoTreeInfo> {
+  const order = [preferred, ...branches.filter((b) => b !== preferred)].slice(0, 6)
+  let best: RepoTreeInfo | null = null
+  let preferredTree: RepoTreeInfo | null = null
+
+  for (const b of order) {
+    try {
+      const tree = await fetchRepoTree(token, repo, b)
+      if (b === preferred) preferredTree = tree
+      if (!best || tree.textPaths.length > best.textPaths.length) best = tree
+      // Если в выбранной пользователем ветке действительно есть проект — не переключаем
+      if (b === preferred && tree.textPaths.length >= 5) return tree
+    } catch {
+      // ветку мог удалить или она недоступна — пробуем следующую
+    }
+  }
+  return best || preferredTree || { branch: preferred, allPaths: [], textPaths: [], truncated: false }
+}
+
+interface SnapshotResult {
+  files: Record<string, string>
+  tree: RepoTreeInfo
+  /** Сколько файлов в ветке всего и сколько реально загружено в рабочую область */
+  totalFiles: number
+  loadedFiles: number
+  readmePath: string
+}
 
 /**
  * Загружает README, манифесты и исходники репозитория в рабочую область.
- * Сначала README/manifest-файлы, затем остальные исходники (до `maxFiles`).
+ * Порядок приоритета: README/лицензия → манифесты и workflow → остальной код.
  */
 export async function fetchRepoSnapshot(
   token: string,
   repo: string,
   branch: string,
-  maxFiles = 28,
-): Promise<{ files: Record<string, string>; totalFiles: number; readmePath: string }> {
+  maxFiles = 40,
+  preloadedTree?: RepoTreeInfo,
+): Promise<SnapshotResult> {
   const repoPath = repo.trim()
-  const branchRef = encodeURIComponent(branch.trim() || "main")
-  const treeRes = await fetch(`https://api.github.com/repos/${repoPath}/git/trees/${branchRef}?recursive=1`, {
-    headers: ghHeaders(token),
-  })
-  const treeData: any = await treeRes.json().catch(() => ({}))
-  if (!treeRes.ok) {
-    throw new Error(treeData?.message || `Не удалось прочитать дерево репозитория (HTTP ${treeRes.status})`)
-  }
-
-  const blobs = (Array.isArray(treeData.tree) ? treeData.tree : []).filter(
-    (item: any) =>
-      item &&
-      item.type === "blob" &&
-      (item.size ?? 0) < 160000 &&
-      !IGNORED_PREFIXES.some((p) => String(item.path).startsWith(p)),
-  )
+  const ref = (branch || "main").trim()
+  const tree = preloadedTree ?? (await fetchRepoTree(token, repoPath, ref))
 
   const priority = (p: string) =>
-    /(^|\/)readme(\.(md|mdx|txt|rst))?$/i.test(p)
+    /(^|\/)readme/i.test(p)
       ? 0
-      : /(^|\/)(package\.json|tsconfig\.json|vite\.config\.[jt]s|build\.gradle|settings\.gradle|pyproject\.toml|requirements\.txt|cargo\.toml|go\.mod|dockerfile|makefile|\.github\/workflows\/[^/]+)$/i.test(
-            p,
-          )
+      : TEXT_BASENAMES.test(p.split("/").pop() || p) ||
+          /\.(gradle|toml|mod|sum|lock|cfg|conf|ini|env)$/i.test(p) ||
+          /^\.github\/workflows\//i.test(p)
         ? 1
         : /(^|\/)agents\.md$/i.test(p)
           ? 2
-          : /\.(ts|tsx|js|jsx|py|java|kt|go|rs|dart|swift|cs|cpp|c|h)$/i.test(p)
+          : /\.(ts|tsx|js|jsx|go|py|java|kt|rs|rb|php|cs|cpp|c|h|swift|dart|bsl|mdo|os|vue|svelte|scala|lua|sh|nsi)$/i.test(
+                p,
+              )
             ? 3
             : 4
 
-  const candidates = blobs
-    .filter((item: any) => SOURCE_FILE_RE.test(String(item.path)))
-    .sort((a: any, b: any) => priority(String(a.path)) - priority(String(b.path)) || String(a.path).localeCompare(String(b.path)))
+  const candidates = [...tree.textPaths]
+    .sort((a, b) => priority(a) - priority(b) || a.localeCompare(b))
     .slice(0, Math.max(1, maxFiles))
 
   const files: Record<string, string> = {}
   let readmePath = ""
+
   await Promise.all(
-    candidates.map(async (blob: any) => {
+    candidates.map(async (path) => {
       try {
         const contentRes = await fetch(
-          `https://api.github.com/repos/${repoPath}/contents/${blob.path}?ref=${encodeURIComponent(branch.trim() || "main")}`,
+          `https://api.github.com/repos/${repoPath}/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`,
           { headers: ghHeaders(token) },
         )
         if (!contentRes.ok) return
@@ -128,13 +208,29 @@ export async function fetchRepoSnapshot(
         if (!contentData?.content) return
         const text = decodeBase64Utf8(String(contentData.content))
         if (!text) return
-        files[blob.path] = text
-        if (!readmePath && /(^|\/)readme/i.test(String(blob.path))) readmePath = String(blob.path)
+        files[path] = text
+        if (!readmePath && /(^|\/)readme/i.test(path)) readmePath = path
       } catch {}
     }),
   )
 
-  return { files, totalFiles: blobs.length, readmePath }
+  return {
+    files,
+    tree: { ...tree, branch: ref },
+    totalFiles: tree.allPaths.length,
+    loadedFiles: Object.keys(files).length,
+    readmePath,
+  }
+}
+
+/** Текстовая карта репозитория для промпта агента */
+export function buildRepoManifest(tree: RepoTreeInfo, limit = 320): string {
+  const shown = tree.textPaths.slice(0, limit)
+  const more = tree.textPaths.length - shown.length
+  return (
+    shown.map((p) => `  ${p}`).join("\n") +
+    (more > 0 ? `\n  … и ещё ${more} файлов (вызови github_read с action="list" чтобы увидеть все)` : "")
+  )
 }
 
 const ACTION_DEFS = [
@@ -265,6 +361,42 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, selected, token])
 
+  // Проверяем выбранную ветку сразу при выборе репозитория: если там только README,
+  // автоматически находим ветку, в которой действительно лежит проект.
+  useEffect(() => {
+    if (!open || !selected.trim() || !token.trim()) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const current = branch || "main"
+        const tree = await fetchRepoTree(token, selected, current)
+        if (cancelled) return
+        if (tree.textPaths.length >= 3) {
+          setStatus(`Ветка «${current}»: файлов ${tree.allPaths.length} (${tree.textPaths.length} текстовых). Можно запускать анализ.`)
+          return
+        }
+        const best = await detectBestBranch(token, selected, branches, current)
+        if (cancelled) return
+        if (best.branch !== current && best.textPaths.length > tree.textPaths.length) {
+          setBranch(best.branch)
+          setStatus(
+            `ℹ️ В ветке «${current}» найдено всего ${tree.textPaths.length} файл(ов) — проект находится в ветке «${best.branch}» (${best.textPaths.length} файлов). Ветка выбрана автоматически.`,
+          )
+        } else {
+          setStatus(
+            `⚠️ В ветке «${current}» найдено только ${tree.textPaths.length} файл(ов) проекта. Проверьте другую ветку в списке выше.`,
+          )
+        }
+      } catch (err: any) {
+        if (!cancelled) setStatus(`⚠️ ${err?.message || "Не удалось прочитать ветку"}`)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, selected, branch, token])
+
   const filteredRepos = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return repos
@@ -276,8 +408,13 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
     [repos, selected, branch],
   )
 
-  const buildPrompt = (id: ActionId, repo: string, br: string): string => {
-    const head = `Репозиторий: ${repo} (ветка ${br}). Файлы репозитория уже загружены в рабочую область.`
+  const buildPrompt = (id: ActionId, repo: string, br: string, manifest: string, loaded: number): string => {
+    const head = `Репозиторий: ${repo} (ветка ${br}).
+В рабочую область загружено файлов: ${loaded}.
+Полная структура ветки (это РЕАЛЬНЫЕ файлы проекта — не утверждай, что их нет):
+${manifest}
+Если нужного файла нет в рабочей области — вызови инструмент github_read с action="read" и path (например github_read { action: "read", path: "internal/app/app.go" }).`
+
     if (id === "readme") {
       return `${head}
 
@@ -334,32 +471,49 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
 Не читай открытые вкладки браузера — работай только с файлами репозитория.`
   }
 
+  /** Загружает репозиторий с авто-определением ветки, в которой реально лежит проект */
+  const prepareSnapshot = async (repo: string, preferredBranch: string) => {
+    const tree = await detectBestBranch(token, repo, branches, preferredBranch)
+    if (tree.textPaths.length === 0) {
+      throw new Error(
+        `В ветке «${tree.branch}» не найдено файлов проекта (всего файлов: ${tree.allPaths.length}). Выберите другую ветку в списке выше.`,
+      )
+    }
+    const snapshot = await fetchRepoSnapshot(token, repo, tree.branch, 40, tree)
+    return snapshot
+  }
+
   const runTask = async (id: ActionId) => {
     const repo = selected.trim()
     if (!repo) {
       setStatus("⚠️ Сначала выберите репозиторий из списка.")
       return
     }
-    const br = (branch || "main").trim()
+    const requestedBranch = (branch || "main").trim()
     setAction(id)
     setBusy(true)
-    setStatus(`Загрузка файлов ${repo} (${br})...`)
+    setStatus(`Читаю файлы ${repo}…`)
     try {
-      const snapshot = await fetchRepoSnapshot(token, repo, br)
-      const files = snapshot.files
-
-      setSnapshotInfo({ repo: `${repo}@${br}`, count: Object.keys(files).length })
-      setStatus(
-        `✅ Загружено ${Object.keys(files).length} файлов из ${repo} (${br}). Запускаю агента…`,
-      )
+      const snapshot = await prepareSnapshot(repo, requestedBranch)
+      const effectiveBranch = snapshot.tree.branch
+      const loaded = snapshot.loadedFiles
+      setSnapshotInfo({ repo: `${repo}@${effectiveBranch}`, count: loaded })
+      setBranch(effectiveBranch)
       localStorage.setItem(GH_REPO_KEY, repo)
-      localStorage.setItem(`${GH_REPO_KEY}_branch`, br)
+      localStorage.setItem(`${GH_REPO_KEY}_branch`, effectiveBranch)
+
+      const switched = effectiveBranch !== requestedBranch
+      setStatus(
+        `${switched ? `ℹ️ В ветке «${requestedBranch}» проекта не найдено — автоматически выбрана ветка «${effectiveBranch}». ` : ""}✅ Файлов в ветке: ${snapshot.totalFiles}, загружено в рабочую область: ${loaded}. Запускаю агента…`,
+      )
+
+      const manifest = buildRepoManifest(snapshot.tree)
       onRunTask({
         repo,
-        branch: br,
+        branch: effectiveBranch,
         action: actionTitle(id),
-        prompt: buildPrompt(id, repo, br),
-        files,
+        prompt: buildPrompt(id, repo, effectiveBranch, manifest, loaded),
+        files: snapshot.files,
       })
     } catch (err: any) {
       setStatus(`❌ Не удалось загрузить репозиторий: ${err?.message || "неизвестная ошибка"}`)
@@ -374,17 +528,27 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
       setStatus("⚠️ Сначала выберите репозиторий из списка.")
       return
     }
-    const br = (branch || "main").trim()
+    const requestedBranch = (branch || "main").trim()
     setBusy(true)
-    setStatus(`Загрузка файлов ${repo} (${br}) в рабочую область...`)
+    setStatus(`Загрузка файлов ${repo} (${requestedBranch}) в рабочую область...`)
     try {
-      const snapshot = await fetchRepoSnapshot(token, repo, br)
-      const count = Object.keys(snapshot.files).length
-      setSnapshotInfo({ repo: `${repo}@${br}`, count })
+      const snapshot = await prepareSnapshot(repo, requestedBranch)
+      const effectiveBranch = snapshot.tree.branch
+      const loaded = snapshot.loadedFiles
+      setSnapshotInfo({ repo: `${repo}@${effectiveBranch}`, count: loaded })
+      setBranch(effectiveBranch)
       localStorage.setItem(GH_REPO_KEY, repo)
-      localStorage.setItem(`${GH_REPO_KEY}_branch`, br)
-      setStatus(`✅ Загружено ${count} файлов из ${repo} (${br}). Можно работать в редакторе и в чате.`)
-      onRunTask({ repo, branch: br, action: "Загрузка файлов в рабочую область", prompt: "", files: snapshot.files })
+      localStorage.setItem(`${GH_REPO_KEY}_branch`, effectiveBranch)
+      setStatus(
+        `✅ Ветка «${effectiveBranch}»: файлов ${snapshot.totalFiles}, загружено ${loaded}. Можно работать в редакторе и в чате.`,
+      )
+      onRunTask({
+        repo,
+        branch: effectiveBranch,
+        action: "Загрузка файлов в рабочую область",
+        prompt: "",
+        files: snapshot.files,
+      })
     } catch (err: any) {
       setStatus(`❌ Не удалось загрузить репозиторий: ${err?.message || "неизвестная ошибка"}`)
     } finally {

@@ -44,6 +44,7 @@ console.log(`✓ Verified ${requiredFreeModels.length} core OpenCode Free AI mod
 // 3. Verify all 18 OpenCode Tools (including browser_tabs Chrome Extension bridge)
 const toolsSrc = checkFile("src/core/tools.ts").toString("utf-8")
 const requiredTools = [
+  "github_read",
   "read",
   "write",
   "edit",
@@ -74,8 +75,8 @@ checkFile("chrome-extension/background.js")
 checkFile("chrome-extension/content.js")
 checkFile("chrome-extension/popup.html")
 checkFile("chrome-extension/popup.js")
-checkFile("public/ZiCode-Chrome-Extension-v2.7.1.zip")
-console.log("✓ Verified Manifest V3 Chrome Extension (chrome-extension/ & ZiCode-Chrome-Extension-v2.7.1.zip)")
+checkFile("public/ZiCode-Chrome-Extension-v2.7.2.zip")
+console.log("✓ Verified Manifest V3 Chrome Extension (chrome-extension/ & ZiCode-Chrome-Extension-v2.7.2.zip)")
 
 // 4. Verify Agents & Slash commands
 const agentsSrc = checkFile("src/core/agents.ts").toString("utf-8")
@@ -105,7 +106,16 @@ assert.ok(
   "Browser system prompt must be conditional",
 )
 const hubSrc = checkFile("src/components/GitHubReposHub.tsx").toString("utf-8")
-for (const needle of ["Работа с репозиториями GitHub", "fetchRepoSnapshot", "Анализ README", "GitHub Actions"]) {
+for (const needle of [
+  "Работа с репозиториями GitHub",
+  "fetchRepoSnapshot",
+  "fetchRepoTree",
+  "detectBestBranch",
+  "buildRepoManifest",
+  "isTextRepoPath",
+  "Анализ README",
+  "GitHub Actions",
+]) {
   assert.ok(hubSrc.includes(needle), `GitHub repos hub missing: ${needle}`)
 }
 const appSrc = checkFile("src/App.tsx").toString("utf-8")
@@ -114,5 +124,19 @@ assert.ok(appSrc.includes("Работа с репозиториями GitHub"), 
 assert.ok(appSrc.includes("repoContext"), "App must pass repo context to the agent")
 const toolsSrc2 = checkFile("src/core/tools.ts").toString("utf-8")
 assert.ok(toolsSrc2.includes("browserDisabled"), "browser_tabs must refuse execution when browser is not requested")
+assert.ok(
+  hubSrc.includes("Полная структура ветки") || hubSrc.includes("Реальн"),
+  "Hub must pass the repository file manifest to the agent",
+)
 console.log("✓ Verified GitHub repositories hub (README analysis, code fixes, GitHub Actions builds) & strict browser opt-in")
+
+// 7. Verify github_read tool (reading any repo file, auto branch detection)
+const toolsSchemas = checkFile("src/core/tools.ts").toString("utf-8")
+assert.ok(toolsSchemas.includes('name: "github_read"'), "Missing github_read tool schema")
+assert.ok(toolsSchemas.includes('case "github_read"'), "Missing github_read tool handler")
+assert.ok(
+  hubSrc.includes("detectBestBranch(") && hubSrc.includes("textPaths"),
+  "Hub must auto-detect the branch that actually contains the project",
+)
+console.log("✓ Verified github_read tool & automatic branch detection for GitHub repositories")
 console.log("=== ALL TESTS PASSED ===")

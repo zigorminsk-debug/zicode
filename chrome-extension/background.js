@@ -813,7 +813,7 @@ async function syncOpenTabs(reason = "event", opts = {}) {
       return lastSyncPayload
     }
 
-    // ВАЖНО (v2.7.1): глубокое чтение содержимого страниц (DOM/фреймы/письма)
+    // ВАЖНО (v2.7.2): глубокое чтение содержимого страниц (DOM/фреймы/письма)
     // выполняется ТОЛЬКО по явному запросу ZiCode (пользователь просит прочитать
     // вкладку/почту) либо по кнопке «Синхронизировать» в попапе расширения.
     // Фоновые heartbeat/alarm события отправляют только заголовки и URL вкладок,
@@ -877,7 +877,7 @@ async function syncOpenTabs(reason = "event", opts = {}) {
 
     const payload = {
       source: "zicode-chrome-extension",
-      version: "2.7.1",
+      version: "2.7.2",
       reason,
       deep,
       updatedAt: Date.now(),

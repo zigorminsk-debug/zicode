@@ -220,8 +220,8 @@ function createServer(port = PORT, host = HOST) {
       loadPersistedTabs()
       return sendJson(res, 200, {
         status: "ok",
-        engine: "ZiCode (OpenCode Core v2.7.1)",
-        version: "2.7.1",
+        engine: "ZiCode (OpenCode Core v2.7.2)",
+        version: "2.7.2",
         platform: process.platform,
         arch: process.arch,
         browserTabsCount: browserTabsStore.tabs.length,

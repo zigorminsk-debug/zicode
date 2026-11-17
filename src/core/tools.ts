@@ -35,6 +35,8 @@ export interface ToolExecutionContext {
   browserTabs?: BrowserTabItem[]
   /** Режим без браузера: агент не имеет права читать вкладки/почту (обычные задачи и работа с репозиторием) */
   browserDisabled?: boolean
+  /** Активный репозиторий GitHub (кнопка «🐙 Работа с репозиториями GitHub») для инструмента github_read */
+  repoContext?: { repo: string; branch?: string }
   onQuestion?: (q: QuestionPrompt) => void
   onArtifact?: (a: ArtifactItem) => void
 }
@@ -309,6 +311,28 @@ export const OPENCODE_TOOL_SCHEMAS = [
           content: { type: "string" },
         },
         required: ["title", "type", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "github_read",
+      description:
+        "Read files directly from the active GitHub repository (works even when a file was not pre-loaded into the workspace). Use action='list' to get the full file tree of a branch, or action='read' + path to get the full text of any file (e.g. 'internal/app/app.go'). Files read this way are also saved into the workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["list", "read", "tree"],
+            description: "list/tree = full file list of the branch; read = file contents by path",
+          },
+          path: { type: "string", description: "Repository-relative file path, e.g. src/main.ts or internal/app/app.go" },
+          repo: { type: "string", description: "owner/repo (defaults to the repository selected in ZiCode)" },
+          ref: { type: "string", description: "Branch or commit SHA (defaults to the selected branch)" },
+        },
+        required: [],
       },
     },
   },
@@ -773,6 +797,82 @@ export async function executeToolCall(
       ctx.onArtifact?.(item)
       return {
         output: `Created interactive ${item.type.toUpperCase()} artifact "${item.title}" (${item.content.length} chars).`,
+      }
+    }
+
+    case "github_read": {
+      const ghToken = (() => {
+        try {
+          return localStorage.getItem("zicode_github_token") || ""
+        } catch {
+          return ""
+        }
+      })()
+      const repo = String(args.repo || ctx.repoContext?.repo || "").trim()
+      const ref = String(args.ref || ctx.repoContext?.branch || "main").trim()
+      if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) {
+        return {
+          output:
+            "github_read: репозиторий не выбран. Попросите пользователя нажать кнопку «🐙 Работа с репозиториями GitHub» в чате и выбрать репозиторий.",
+          isError: true,
+        }
+      }
+      const ghH: Record<string, string> = { Accept: "application/vnd.github+json" }
+      if (ghToken.trim()) ghH.Authorization = `Bearer ${ghToken.trim()}`
+      const action = String(args.action || "read").toLowerCase()
+
+      // Дерево файлов ветки — чтобы агент всегда видел структуру проекта
+      if (action === "list" || action === "tree" || action === "files") {
+        try {
+          const res = await fetch(
+            `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+            { headers: ghH },
+          )
+          const data: any = await res.json().catch(() => ({}))
+          if (!res.ok) return { output: `github_read: GitHub HTTP ${res.status} — ${data?.message || "ошибка"}`, isError: true }
+          const paths: string[] = (Array.isArray(data?.tree) ? data.tree : [])
+            .filter((t: any) => t?.type === "blob")
+            .map((t: any) => String(t.path))
+          const shown = paths.slice(0, 600)
+          return {
+            output:
+              `Репозиторий ${repo} @ ${ref}: файлов ${paths.length}${data?.truncated ? " (дерево усечено GitHub, показаны первые 600)" : ""}.\n` +
+              shown.join("\n"),
+          }
+        } catch (err: any) {
+          return { output: `github_read: не удалось прочитать список файлов (${err?.message || err})`, isError: true }
+        }
+      }
+
+      const path = String(args.path || args.filePath || "").replace(/^\/+/, "")
+      if (!path) {
+        return { output: "github_read: укажите path файла (например internal/app/app.go) или action='list'.", isError: true }
+      }
+      try {
+        const res = await fetch(
+          `https://api.github.com/repos/${repo}/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`,
+          { headers: ghH },
+        )
+        if (!res.ok) {
+          const data: any = await res.json().catch(() => ({}))
+          return { output: `github_read: файл «${path}» недоступен (HTTP ${res.status}: ${data?.message || "not found"}).`, isError: true }
+        }
+        const data: any = await res.json()
+        if (Array.isArray(data)) {
+          // Это каталог — вернём список вложенных файлов
+          return { output: `Каталог ${path}/ в ${repo} @ ${ref}:\n${data.map((d: any) => `${d.type === "dir" ? "[dir]" : "     "} ${d.path}`).join("\n")}` }
+        }
+        if (!data?.content) return { output: `github_read: файл «${path}» пуст или не является текстовым.`, isError: true }
+        const binary = atob(String(data.content).replace(/\n/g, ""))
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        const text = new TextDecoder("utf-8").decode(bytes)
+        const truncated = text.length > 40000
+        const body = truncated ? `${text.slice(0, 40000)}\n\n… [файл усечён, всего ${text.length} символов]` : text
+        ctx.setFiles((prev) => ({ ...prev, [path]: text }))
+        return { output: `Файл ${path} (${repo} @ ${ref}, ${text.length} символов):\n\`\`\`\n${body}\n\`\`\`` }
+      } catch (err: any) {
+        return { output: `github_read: ошибка чтения файла (${err?.message || err})`, isError: true }
       }
     }
 

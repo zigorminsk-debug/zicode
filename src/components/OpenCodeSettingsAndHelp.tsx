@@ -36,6 +36,7 @@ import {
   ThemePalette,
 } from "../core/types"
 import { BUILTIN_SKILLS } from "../core/workspace"
+import { detectBestBranch, fetchRepoSnapshot } from "./GitHubReposHub"
 
 export type SettingsTabId =
   | "providers"
@@ -997,7 +998,7 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
                     Статус: <b>Синхронизировано {browserTabs.length} открытых вкладок</b> через <code>http://127.0.0.1:4096/api/browser/sync</code>.
                   </p>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.1/ZiCode-Chrome-Extension-v2.7.1.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.2/ZiCode-Chrome-Extension-v2.7.2.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1013,7 +1014,7 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
                       fontSize: "12px",
                     }}
                   >
-                    <Download size={14} /> Скачать ZiCode-Chrome-Extension-v2.7.1.zip
+                    <Download size={14} /> Скачать ZiCode-Chrome-Extension-v2.7.2.zip
                   </a>
                 </div>
               )}
@@ -1600,57 +1601,44 @@ export const GitHubCollaborationView: React.FC<GitHubCollaborationProps> = ({
       return
     }
     setLoading(true)
-    setStatusMsg(`Загрузка файлов из ${selectedRepo} (ветка ${branch})...`)
+    setStatusMsg(`Читаю ветки и файлы репозитория ${selectedRepo}...`)
     try {
-      const treeRes = await fetch(
-        `https://api.github.com/repos/${selectedRepo.trim()}/git/trees/${encodeURIComponent(branch.trim())}?recursive=1`,
-        { headers: ghHeaders() },
-      )
-      const treeData = await treeRes.json()
-      if (!treeRes.ok) throw new Error(treeData.message || `HTTP ${treeRes.status}`)
-
-      const blobs = (treeData.tree || [])
-        .filter(
-          (item: any) =>
-            item.type === "blob" &&
-            item.size < 120000 &&
-            !item.path.startsWith("node_modules/") &&
-            !item.path.startsWith("dist/") &&
-            !item.path.startsWith(".git/") &&
-            /\.(ts|tsx|js|cjs|mjs|json|md|py|html|css|yml|yaml|sh|txt|kt|java|gradle)$/i.test(item.path),
-        )
-        .slice(0, 25)
-
-      const loadedFiles: Record<string, string> = {}
-      for (const blob of blobs) {
-        const fRes = await fetch(
-          `https://api.github.com/repos/${selectedRepo.trim()}/contents/${blob.path}?ref=${encodeURIComponent(branch.trim())}`,
-          { headers: ghHeaders() },
-        )
-        if (fRes.ok) {
-          const fData = await fRes.json()
-          if (fData.content && fData.encoding === "base64") {
-            const decoded = decodeURIComponent(
-              Array.prototype.map
-                .call(atob(fData.content.replace(/\n/g, "")), (c: string) => {
-                  return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)
-                })
-                .join(""),
-            )
-            loadedFiles[blob.path] = decoded
-          }
+      // Список веток, чтобы найти ту, где реально лежит проект (в main часто только README)
+      let branchNames: string[] = []
+      try {
+        const brRes = await fetch(`https://api.github.com/repos/${selectedRepo.trim()}/branches?per_page=100`, {
+          headers: ghHeaders(),
+        })
+        if (brRes.ok) {
+          const brData: any = await brRes.json()
+          if (Array.isArray(brData)) branchNames = brData.map((b: any) => String(b.name))
         }
+      } catch {}
+
+      const tree = await detectBestBranch(token, selectedRepo.trim(), branchNames, branch.trim() || "main")
+      if (tree.textPaths.length === 0) {
+        setStatusMsg(
+          `⚠️ В ветке «${tree.branch}» не найдено текстовых файлов проекта (всего файлов: ${tree.allPaths.length}). Выберите другую ветку.`,
+        )
+        return
+      }
+      const switched = tree.branch !== (branch.trim() || "main")
+      setBranch(tree.branch)
+
+      const snapshot = await fetchRepoSnapshot(token, selectedRepo.trim(), tree.branch, 40, tree)
+      const loaded = snapshot.files
+      if (Object.keys(loaded).length === 0) {
+        setStatusMsg("⚠️ Не удалось прочитать файлы репозитория (проверьте токен и права доступа).")
+        return
       }
 
-      if (Object.keys(loadedFiles).length > 0) {
-        setFiles(loadedFiles)
-        onSelectFile(Object.keys(loadedFiles)[0])
-        setStatusMsg(
-          `✅ Загружено ${Object.keys(loadedFiles).length} файлов из ${selectedRepo} (${branch}) в рабочую область!`,
-        )
-      } else {
-        setStatusMsg("⚠️ В репозитории не найдено текстовых файлов подходящего формата.")
-      }
+      setFiles((prev) => ({ ...prev, ...loaded }))
+      onSelectFile(snapshot.readmePath || Object.keys(loaded)[0])
+      localStorage.setItem("zicode_github_repo", selectedRepo.trim())
+      setStatusMsg(
+        `${switched ? `ℹ️ В ветке «${branch.trim() || "main"}» проекта не найдено — автоматически выбрана ветка «${tree.branch}». ` : ""}` +
+          `✅ Загружено ${Object.keys(loaded).length} из ${tree.textPaths.length} файлов проекта (ветка «${tree.branch}», всего файлов в ветке: ${tree.allPaths.length}).`,
+      )
     } catch (err: any) {
       setStatusMsg(`❌ Ошибка загрузки из GitHub: ${err.message}`)
     } finally {
@@ -1678,6 +1666,15 @@ export const GitHubCollaborationView: React.FC<GitHubCollaborationProps> = ({
         if (checkRes.ok) {
           const existing = await checkRes.json()
           sha = existing.sha
+          // Не создаём пустые коммиты: если файл не изменился — пропускаем
+          if (existing.content && existing.encoding === "base64") {
+            try {
+              const remoteText = new TextDecoder("utf-8").decode(
+                Uint8Array.from(atob(String(existing.content).replace(/\n/g, "")), (c) => c.charCodeAt(0)),
+              )
+              if (remoteText === content) continue
+            } catch {}
+          }
         }
 
         const b64 = btoa(
@@ -2460,12 +2457,12 @@ export const HelpAndGuideView: React.FC<HelpAndGuideProps> = ({
           <li>
             Скачайте архив расширения{" "}
             <a
-              href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.1/ZiCode-Chrome-Extension-v2.7.1.zip"
+              href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.2/ZiCode-Chrome-Extension-v2.7.2.zip"
               target="_blank"
               rel="noreferrer"
               style={{ color: "var(--accent)" }}
             >
-              ZiCode-Chrome-Extension-v2.7.1.zip
+              ZiCode-Chrome-Extension-v2.7.2.zip
             </a>{" "}
             и распакуйте его в любую папку.
           </li>
