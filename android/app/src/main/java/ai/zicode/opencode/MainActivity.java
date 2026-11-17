@@ -52,13 +52,15 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccessFromFileURLs(true);
         settings.setAllowUniversalAccessFromFileURLs(true);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
 
+        webView.clearCache(true);
         webView.setWebViewClient(new WebViewClient());
         webView.setWebChromeClient(new WebChromeClient());
         webView.addJavascriptInterface(new ZiCodeBridge(), "ZiCodeNativeBridge");
 
         setContentView(webView);
-        webView.loadUrl("file:///android_asset/www/index.html");
+        webView.loadUrl("file:///android_asset/www/index.html?v=260");
     }
 
     @Override

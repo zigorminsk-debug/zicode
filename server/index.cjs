@@ -219,12 +219,29 @@ function createServer(port = PORT, host = HOST) {
       loadPersistedTabs()
       return sendJson(res, 200, {
         status: "ok",
-        engine: "ZiCode (OpenCode Core v2.4.0)",
+        engine: "ZiCode (OpenCode Core v2.6.0)",
+        version: "2.6.0",
         platform: process.platform,
         arch: process.arch,
         browserTabsCount: browserTabsStore.tabs.length,
         timestamp: Date.now(),
       })
+    }
+
+    // 1a. Localhost instance replacement shutdown (allows a newly launched .exe to replace an older .exe on port 4096)
+    if (pathname === "/api/shutdown" && req.method === "POST") {
+      const remote = String(req.socket?.remoteAddress || "")
+      if (remote.includes("127.0.0.1") || remote === "::1") {
+        sendJson(res, 200, { ok: true, shuttingDown: true })
+        setTimeout(() => {
+          try {
+            server.close()
+          } catch {}
+          process.exit(0)
+        }, 80)
+        return
+      }
+      return sendJson(res, 403, { ok: false })
     }
 
     // 1b. Chrome Extension Bridge: Receive open tabs & active page DOM content + return pending actions

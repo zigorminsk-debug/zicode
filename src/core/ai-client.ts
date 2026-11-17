@@ -276,13 +276,19 @@ async function sendInferenceHttp(
     }
   } catch {}
 
-  // 3. Try Chrome Extension CORS-free Service Worker Bridge (if extension is installed in user's Chrome)
-  try {
-    const extRes = await fetchViaChromeExtension(url, headers, bodyStr, 9000)
-    if (extRes && (extRes.choices || extRes.content)) {
-      return extRes
-    }
-  } catch {}
+  // 3. Try Chrome Extension CORS-free Service Worker Bridge (only on HTTP/HTTPS web pages, with fast 1.2s timeout)
+  if (
+    typeof window !== "undefined" &&
+    !window.ZiCodeNativeBridge &&
+    window.location?.protocol?.startsWith("http")
+  ) {
+    try {
+      const extRes = await fetchViaChromeExtension(url, headers, bodyStr, 1200)
+      if (extRes && (extRes.choices || extRes.content)) {
+        return extRes
+      }
+    } catch {}
+  }
 
   // 4. Direct Browser Fetch with CORS-safe headers (strip custom x-opencode-* and User-Agent headers that trigger CORS preflight rejections)
   const corsSafeHeaders: Record<string, string> = {
@@ -297,6 +303,7 @@ async function sendInferenceHttp(
     method: "POST",
     headers: corsSafeHeaders,
     body: bodyStr,
+    signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined,
   })
   if (!directRes.ok) {
     const errText = await directRes.text()
@@ -499,29 +506,36 @@ async function tryFreeGatewayCompletion(
     })
   }
 
-  // If the user selected a model from another provider (e.g. nvidia/deepseek-v4.1-flash) without entering a paid key,
-  // automatically route through OpenCode Free (`apiKey: "public"`) with the matching free model!
+  // If the user selected a model from another provider (e.g. openrouter/cohere/north-mini-code:free or google/gemini-2.5-flash) without entering a paid key,
+  // automatically route through OpenCode Free (`apiKey: "public"`) rotating across the active free model pool!
   if (isPublicFree) {
     const mappedFreeModel = provider.id === "opencode" ? model.id : mapToOpenCodeFreeModelId(model.id)
-    if (provider.id !== "opencode") {
+    const freePool = Array.from(
+      new Set([
+        mappedFreeModel,
+        "deepseek-v4.1-flash-free",
+        "glm-5.3-flash-free",
+        "beam-free",
+        "mimo-v2.6-flash-free",
+        "big-pickle",
+      ]),
+    )
+
+    for (const poolModelId of freePool.slice(0, 4)) {
+      const freshSessionHeaders = buildOpenCodeHeaders(
+        { ...session, affinityId: `ses_${Date.now()}_${poolModelId}` },
+        { ...provider, id: "opencode" },
+        model,
+        "public",
+      )
       candidateRoutes.push({
         url: "https://opencode.ai/inference/openai/v1/chat/completions",
-        headers: openCodeFreeHeaders,
-        modelName: mappedFreeModel,
-        sendTools: enableTools,
+        headers: freshSessionHeaders,
+        modelName: poolModelId,
+        sendTools: enableTools && !hasPreviousToolMessages,
         streamMode: true,
         allowVision: false,
       })
-      if (hasPreviousToolMessages) {
-        candidateRoutes.push({
-          url: "https://opencode.ai/inference/openai/v1/chat/completions",
-          headers: openCodeFreeHeaders,
-          modelName: mappedFreeModel,
-          sendTools: false,
-          streamMode: true,
-          allowVision: false,
-        })
-      }
     }
 
     candidateRoutes.push({
@@ -537,17 +551,9 @@ async function tryFreeGatewayCompletion(
       url: "https://text.pollinations.ai/openai",
       headers: { "Content-Type": "application/json" },
       modelName: "openai",
-      sendTools: enableTools && !hasPreviousToolMessages,
-      streamMode: false,
-      allowVision: true,
-    })
-    candidateRoutes.push({
-      url: "https://text.pollinations.ai/openai",
-      headers: { "Content-Type": "application/json" },
-      modelName: "openai",
       sendTools: false,
       streamMode: false,
-      allowVision: false,
+      allowVision: Boolean(hasVisionBlocks),
     })
   }
 
@@ -1096,7 +1102,7 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
         `### 🌐 Данные из открытой вкладки «${targetTab?.title || "Браузер Chrome"}» (через ZiCode Chrome Bridge v2.5)\n\n` +
         (targetTab?.content
           ? `#### 📬 Извлечённые письма, заголовки и содержимое всех фреймов вкладки:\n${enrichTabEmailContent(targetTab).slice(0, 8000)}\n\n`
-          : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.5.0** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
+          : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.6.0** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
         `#### Список всех открытых вкладок (${freshBrowserTabs.length}):\n${tabsBulletList}\n\n` +
         `💡 Вы также можете написать: *«Ответь от моего имени отправителю [Имя]: [текст ответа]»* — и агент сам нажмёт «Ответить» во вкладке почты и введёт/отправит сообщение!`
 
@@ -1250,7 +1256,7 @@ async function runAutonomousLocalOpenCodeAgent(params: {
       ? `### 🌐 Открытые страницы вашего браузера Chrome\n\n${listRes.output}\n\n---\n\n#### 📄 Содержимое активной страницы:\n${activeRes.output.slice(0, 3500)}`
       : `### 🌐 Подключение к Google Chrome (ZiCode Browser Bridge v2.5)\n\n` +
         `Чтобы я видел все открытые вкладки и читал письма/страницы в реальном времени:\n` +
-        `1. Скачайте архив расширения [**ZiCode-Chrome-Extension-v2.5.0.zip**](https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Chrome-Extension-v2.5.0.zip) и распакуйте его.\n` +
+        `1. Скачайте архив расширения [**ZiCode-Chrome-Extension-v2.6.0.zip**](https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip) и распакуйте его.\n` +
         `2. Откройте в браузере \`chrome://extensions\`, включите **«Режим разработчика»** и нажмите **«Загрузить распакованное расширение»**.\n` +
         `3. Нажмите на иконку **ZiCode Chrome Bridge** → **«🔄 Синхронизировать открытые вкладки сейчас»**.`
     onUpdate({ content, reasoning: "", toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })

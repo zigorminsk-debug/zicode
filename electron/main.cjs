@@ -4,21 +4,43 @@ const { createServer } = require("../server/index.cjs")
 
 let mainWindow = null
 let backendServer = null
-const BACKEND_PORT = 4096
+let activePort = 4096
 
-const gotTheLock = app.requestSingleInstanceLock()
-if (!gotTheLock) {
-  app.quit()
-} else {
-  app.on("second-instance", () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
-    }
+async function shutdownPreviousInstanceOn4096() {
+  try {
+    await fetch("http://127.0.0.1:4096/api/shutdown", {
+      method: "POST",
+      signal: AbortSignal.timeout(450),
+    })
+    await new Promise((r) => setTimeout(r, 250))
+  } catch {}
+}
+
+async function startBackendServer() {
+  await shutdownPreviousInstanceOn4096()
+
+  return new Promise((resolve) => {
+    const srv = createServer(4096, "127.0.0.1")
+    srv.once("listening", () => {
+      const addr = srv.address()
+      activePort = typeof addr === "object" && addr?.port ? addr.port : 4096
+      backendServer = srv
+      resolve(activePort)
+    })
+    srv.once("error", () => {
+      // If 4096 is still occupied by another process, bind a guaranteed free port for this .exe's UI!
+      const fallbackSrv = createServer(0, "127.0.0.1")
+      fallbackSrv.once("listening", () => {
+        const addr = fallbackSrv.address()
+        activePort = typeof addr === "object" && addr?.port ? addr.port : 4096
+        backendServer = fallbackSrv
+        resolve(activePort)
+      })
+    })
   })
 }
 
-async function createWindow() {
+async function createWindow(port) {
   try {
     await session.defaultSession.clearCache()
     await session.defaultSession.clearStorageData({
@@ -31,7 +53,7 @@ async function createWindow() {
     height: 880,
     minWidth: 920,
     minHeight: 620,
-    title: "ZiCode v2.4 — OpenCode AI Agent + Chrome Bridge (Windows & Android)",
+    title: "ZiCode v2.6 — OpenCode AI Agent + Chrome Bridge (Windows & Android)",
     backgroundColor: "#0a0c10",
     autoHideMenuBar: true,
     webPreferences: {
@@ -41,7 +63,7 @@ async function createWindow() {
     },
   })
 
-  mainWindow.loadURL(`http://127.0.0.1:${BACKEND_PORT}/?v=${Date.now()}`, {
+  mainWindow.loadURL(`http://127.0.0.1:${port}/?v=${Date.now()}`, {
     extraHeaders: "pragma: no-cache\nCache-Control: no-cache\n",
   })
 
@@ -55,12 +77,12 @@ async function createWindow() {
   })
 }
 
-app.whenReady().then(() => {
-  backendServer = createServer(BACKEND_PORT, "127.0.0.1")
-  createWindow()
+app.whenReady().then(async () => {
+  const port = await startBackendServer()
+  await createWindow(port)
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(activePort)
   })
 })
 

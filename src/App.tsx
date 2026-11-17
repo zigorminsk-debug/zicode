@@ -146,13 +146,22 @@ export function App() {
   const [syncStatus, setSyncStatus] = useState<string>("Встроенный каталог models.dev (40+ Free моделей)")
   const [isSyncingCatalog, setIsSyncingCatalog] = useState(false)
 
-  // Sessions state
+  // Sessions state (auto-strip any legacy gateway error messages from previous builds)
   const [sessions, setSessions] = useState<SessionInfo[]>(() => {
     try {
       const saved = localStorage.getItem("zicode_sessions_v2")
       if (saved) {
         const parsed = JSON.parse(saved)
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((s: SessionInfo) => ({
+            ...s,
+            messages: Array.isArray(s.messages)
+              ? s.messages.filter(
+                  (m) => !String(m.content || "").includes("Не удалось связаться с облачным сервером ИИ"),
+                )
+              : [],
+          }))
+        }
       }
     } catch {}
     return [createInitialSession()]
@@ -1080,7 +1089,7 @@ export function App() {
                       border: "1px solid var(--border-color)",
                     }}
                   >
-                    OpenCode v2.5
+                    OpenCode v2.6
                   </span>
                 </div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>Android APK + Windows EXE</div>
@@ -1815,7 +1824,7 @@ export function App() {
                     <code className="mono">ANDROID_KEYSTORE_BASE64</code>.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Android-v2.5.0-Signed-Release.apk"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Android-v2.6.0-Signed-Release.apk"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1856,7 +1865,7 @@ export function App() {
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Setup-2.5.0-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Setup-2.6.0-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1875,7 +1884,7 @@ export function App() {
                       <Download size={12} /> Скачать Setup .exe
                     </a>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Portable-2.5.0-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Portable-2.6.0-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1914,7 +1923,7 @@ export function App() {
                     Позволяет ZiCode видеть открытые вкладки вашего браузера и читать текст страниц в реальном времени.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Chrome-Extension-v2.5.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -2574,7 +2583,7 @@ export function App() {
                 </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Chrome-Extension-v2.5.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -2634,12 +2643,12 @@ export function App() {
                   <li>
                     Скачайте архив{" "}
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Chrome-Extension-v2.5.0.zip"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
                       target="_blank"
                       rel="noreferrer"
                       style={{ color: "var(--accent)" }}
                     >
-                      ZiCode-Chrome-Extension-v2.5.0.zip
+                      ZiCode-Chrome-Extension-v2.6.0.zip
                     </a>{" "}
                     и распакуйте его в любую папку на компьютере (или используйте папку <code>chrome-extension/</code> из
                     репозитория).
