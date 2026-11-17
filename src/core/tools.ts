@@ -33,6 +33,8 @@ export interface ToolExecutionContext {
   mcpServers: McpServerConfig[]
   skills?: SkillItem[]
   browserTabs?: BrowserTabItem[]
+  /** Режим без браузера: агент не имеет права читать вкладки/почту (обычные задачи и работа с репозиторием) */
+  browserDisabled?: boolean
   onQuestion?: (q: QuestionPrompt) => void
   onArtifact?: (a: ArtifactItem) => void
 }
@@ -775,6 +777,13 @@ export async function executeToolCall(
     }
 
     case "browser_tabs": {
+      if (ctx.browserDisabled) {
+        return {
+          output:
+            "browser_tabs недоступен: пользователь не просил работать с браузером. Работай только с файлами рабочей области и репозитория. Если браузер действительно нужен — попроси пользователя явно указать это (например: «прочитай открытую вкладку»).",
+          isError: true,
+        }
+      }
       let tabs: BrowserTabItem[] = ctx.browserTabs ?? []
       try {
         const res = await fetch("/api/browser/tabs", { cache: "no-store" })
@@ -785,6 +794,20 @@ export async function executeToolCall(
           }
         }
       } catch {}
+
+      // Если пользователь реально просит прочитать вкладки, а содержимого ещё нет —
+      // один раз просим расширение выполнить глубокое чтение (без постоянного сканирования).
+      if (tabs.length > 0 && !tabs.some((t) => String(t.content || "").length > 200)) {
+        try {
+          await fetch("/api/browser/tabs?deep=1", { cache: "no-store" })
+          await new Promise((r) => setTimeout(r, 2000))
+          const again = await fetch("/api/browser/tabs", { cache: "no-store" })
+          if (again.ok) {
+            const againData = await again.json()
+            if (Array.isArray(againData?.tabs) && againData.tabs.length > 0) tabs = againData.tabs
+          }
+        } catch {}
+      }
 
       if (tabs.length === 0) {
         return {

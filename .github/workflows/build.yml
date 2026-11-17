@@ -76,9 +76,9 @@ jobs:
             echo "::error title=Android Build Failed::$MSG"
             exit $CODE
           fi
-          cp android/app/build/outputs/apk/release/app-release.apk ZiCode-Android-v2.6.0-Signed-Release.apk
-          unzip -l ZiCode-Android-v2.6.0-Signed-Release.apk
-          CERT_INFO=$(keytool -printcert -jarfile ZiCode-Android-v2.6.0-Signed-Release.apk | grep -E "Owner:|SHA256:" | tr '\n' ' ')
+          cp android/app/build/outputs/apk/release/app-release.apk ZiCode-Android-v2.7.0-Signed-Release.apk
+          unzip -l ZiCode-Android-v2.7.0-Signed-Release.apk
+          CERT_INFO=$(keytool -printcert -jarfile ZiCode-Android-v2.7.0-Signed-Release.apk | grep -E "Owner:|SHA256:" | tr '\n' ' ')
           echo "::notice title=Android APK Signed Successfully::$CERT_INFO"
 
       - name: Upload Signed Android APK & Chrome Extension Artifact
@@ -86,21 +86,21 @@ jobs:
         with:
           name: ZiCode-Android-Signed-APK
           path: |
-            ZiCode-Android-v2.6.0-Signed-Release.apk
-            public/ZiCode-Chrome-Extension-v2.6.0.zip
+            ZiCode-Android-v2.7.0-Signed-Release.apk
+            public/ZiCode-Chrome-Extension-v2.7.0.zip
           if-no-files-found: error
 
       - name: Publish Signed APK & Chrome Extension to GitHub Releases (Direct Download Link)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp public/ZiCode-Chrome-Extension-v2.6.0.zip ZiCode-Chrome-Extension-v2.6.0.zip
-          gh release view v2.6.0 >/dev/null 2>&1 || \
-            gh release create v2.6.0 \
+          cp public/ZiCode-Chrome-Extension-v2.7.0.zip ZiCode-Chrome-Extension-v2.7.0.zip
+          gh release view v2.7.0 >/dev/null 2>&1 || \
+            gh release create v2.7.0 \
               --target "${{ github.sha }}" \
-              --title "ZiCode v2.6.0 — OpenCode for Android (Signed APK), Windows (.exe) & Chrome Extension v2.6.0" \
-              --notes "Автоматическая сборка ZiCode v2.6.0 (новый мобильный интерфейс Android + ротация всех бесплатных моделей OpenCode Free + автономный генератор без ошибок подключения + Chrome Bridge v2.6.0 + вставка скриншотов и файлов мышкой)."
-          gh release upload v2.6.0 ZiCode-Android-v2.6.0-Signed-Release.apk ZiCode-Chrome-Extension-v2.6.0.zip --clobber
+              --title "ZiCode v2.7.0 — OpenCode for Android (Signed APK), Windows (.exe) & Chrome Extension v2.7.0" \
+              --notes "Автоматическая сборка ZiCode v2.7.0: кнопка «🐙 Работа с репозиториями GitHub» в чате (анализ README, дописывание и исправление кода, сборка через GitHub Actions), строго опциональный доступ к браузеру (вкладки читаются только по явной просьбе), режим «Просто чат» для локальных задач, новый мобильный интерфейс Android, Chrome Bridge v2.7.0."
+          gh release upload v2.7.0 ZiCode-Android-v2.7.0-Signed-Release.apk ZiCode-Chrome-Extension-v2.7.0.zip --clobber
 
   build-windows:
     name: Build Windows Desktop (.exe Installer & Portable)
@@ -153,13 +153,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view v2.6.0 >/dev/null 2>&1 || \
-            gh release create v2.6.0 \
+          gh release view v2.7.0 >/dev/null 2>&1 || \
+            gh release create v2.7.0 \
               --target "${{ github.sha }}" \
-              --title "ZiCode v2.6.0 — OpenCode for Android (Signed APK), Windows (.exe) & Chrome Extension v2.6.0" \
-              --notes "Автоматическая сборка ZiCode v2.6.0 (новый мобильный интерфейс Android + ротация всех бесплатных моделей OpenCode Free + автономный генератор без ошибок подключения + Chrome Bridge v2.6.0 + вставка скриншотов и файлов мышкой)."
-          gh release upload v2.6.0 \
-            release-builds/ZiCode-Setup-2.6.0-x64.exe \
-            release-builds/ZiCode-Portable-2.6.0-x64.exe \
-            release-builds/ZiCode-2.6.0-x64.zip \
+              --title "ZiCode v2.7.0 — OpenCode for Android (Signed APK), Windows (.exe) & Chrome Extension v2.7.0" \
+              --notes "Автоматическая сборка ZiCode v2.7.0: кнопка «🐙 Работа с репозиториями GitHub» в чате (анализ README, дописывание и исправление кода, сборка через GitHub Actions), строго опциональный доступ к браузеру (вкладки читаются только по явной просьбе), режим «Просто чат» для локальных задач, новый мобильный интерфейс Android, Chrome Bridge v2.7.0."
+          gh release upload v2.7.0 \
+            release-builds/ZiCode-Setup-2.7.0-x64.exe \
+            release-builds/ZiCode-Portable-2.7.0-x64.exe \
+            release-builds/ZiCode-2.7.0-x64.zip \
             --clobber

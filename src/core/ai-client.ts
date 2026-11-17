@@ -26,6 +26,16 @@ export interface RunAgentTurnInput {
   attachments?: ChatAttachment[]
   apiKeys: Record<string, string>
   customBaseUrls: Record<string, string>
+  /**
+   * Активный режим работы с репозиторием GitHub (выбран в чате кнопкой
+   * «Работа с репозиториями GitHub»). Пока режим включён, агент работает
+   * только с кодом репозитория и НЕ читает открытые вкладки браузера.
+   */
+  repoContext?: {
+    repo: string
+    branch?: string
+    action?: string
+  }
   toolCtx: ToolExecutionContext
   onUpdate: (partial: {
     content: string
@@ -604,21 +614,14 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
   let finalContent = ""
   let finalReasoning = ""
 
-  // Always refresh open Chrome tabs from /api/browser/tabs before running agent turn
+  // Вкладки читаются ТОЛЬКО если пользователь явно попросил про браузер/почту/страницы.
+  // Для задач по репозиторию GitHub, README и коду браузер не трогается вообще.
   let freshBrowserTabs = toolCtx.browserTabs ?? []
-  try {
-    const tabsRes = await fetch("/api/browser/tabs", { cache: "no-store" })
-    if (tabsRes.ok) {
-      const tabsData = await tabsRes.json()
-      if (Array.isArray(tabsData?.tabs) && tabsData.tabs.length > 0) {
-        freshBrowserTabs = tabsData.tabs
-      }
-    }
-  } catch {}
 
   const wrappedCtx: ToolExecutionContext = {
     ...toolCtx,
     browserTabs: freshBrowserTabs,
+    browserDisabled: true,
     onQuestion: (q) => {
       latestQuestion = q
       toolCtx.onQuestion?.(q)
@@ -666,15 +669,55 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
 
   const shouldAutoSend = /(отправь|отошли|вышли|сразу\s+отправ)/i.test(userPrompt) && !/(не\s+отправляй|черновик)/i.test(userPrompt)
 
+  // Явное намерение работать с браузером/вкладками/сайтом (а не с кодом и репозиторием).
   const isExplicitTabAction =
-    /(браузер|вкладк|страниц\w*\s+в\s+хром|открыт\w*\s+вкладк|открыт\w*\s+страниц|хром|chrome|видишь\s+в|прочитай\s+вкладк|прочитай\s+страниц|1с|1c|белвэб|автозапчаст|opel|dashboard|ipecs|browser|tab)/i.test(
+    /(браузер\w*|вкладк\w*|хром\w*|chrome|открыт\w*\s+(вкладк|страниц|сайт)|веб-?страниц\w*|сайт\w*\s+в\s+браузер|ipecs|белвэб|dashboard|видишь\s+в)/i.test(
+      userPrompt,
+    )
+
+  // Признаки задачи по коду/репозиторию: в этом случае браузер не читается.
+  const isRepoOrCodeTask =
+    !!input.repoContext ||
+    /(readme|read\s*me|репозитор\w*|гитхаб\w*|github\w*|git\b|коммит\w*|pull\s*request|пул\w*\s*реквест|ветк\w*|branch|исходн\w*\s+код|код\w*\b|файл\w*|проект\w*|сборк\w*|workflow|actions|typescript|javascript|python|gradle|apk|\.exe|багфикс|исправ\w*\s+(код|ошибк)|допис\w*|дополн\w*|рефактор\w*|тест\w*|package\.json|src\/)/i.test(
       userPrompt,
     )
 
   const isBrowserQuery =
     isEmailOrChatQuery ||
     isExplicitTabAction ||
-    (matchedTabsByWord.length > 0 && /(прочитай|читай|обзор|разбери|посмотри|открой|найди\s+в|что\s+на)/i.test(userPrompt))
+    (matchedTabsByWord.length > 0 &&
+      !isRepoOrCodeTask &&
+      /(прочитай|читай|обзор|разбери|посмотри|открой|найди\s+в|что\s+на)/i.test(userPrompt))
+
+  // Браузер разрешён только при явном запросе пользователя (вкладки/почта/сайт)
+  wrappedCtx.browserDisabled = !isBrowserQuery
+
+  // Подтягиваем свежие вкладки ТОЛЬКО когда они реально нужны для ответа.
+  // ?deep=1 просит расширение один раз прочитать текст страниц (без постоянного сканирования).
+  if (isBrowserQuery) {
+    const loadTabs = async (deep: boolean): Promise<any[]> => {
+      try {
+        const tabsRes = await fetch(`/api/browser/tabs${deep ? "?deep=1" : ""}`, { cache: "no-store" })
+        if (!tabsRes.ok) return []
+        const tabsData = await tabsRes.json()
+        return Array.isArray(tabsData?.tabs) ? tabsData.tabs : []
+      } catch {
+        return []
+      }
+    }
+
+    let tabs = await loadTabs(true)
+    // Даём ZiCode Chrome Bridge до ~1.8 c, чтобы прочитать содержимое вкладок и фреймов
+    if (!tabs.some((t: any) => String(t?.content || "").length > 200)) {
+      await new Promise((r) => setTimeout(r, 1800))
+      const retried = await loadTabs(false)
+      if (retried.length > 0) tabs = retried
+    }
+    if (tabs.length > 0) {
+      freshBrowserTabs = tabs
+      wrappedCtx.browserTabs = tabs
+    }
+  }
 
   let preExecutedBrowserContext = ""
 
@@ -760,10 +803,12 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
           .join("\n")
       : "Вкладки ещё не синхронизированы (установите расширение ZiCode Chrome Bridge)"
 
-  const systemMessage = `${agent.systemPrompt}
-
-ВАЖНАЯ ИНСТРУКЦИЯ ПО ДОСТУПУ К БРАУЗЕРУ, ПОЧТЕ (KERIO CONNECT / WEBMAIL) И ПЕРЕПИСКЕ ОТ ИМЕНИ ПОЛЬЗОВАТЕЛЯ (ZiCode Chrome Bridge v2.5):
-1. У тебя ЕСТЬ полный прямой доступ в реальном времени ко всем открытым вкладкам браузера Google Chrome пользователя (включая все вложенные фреймы \`<iframe>\`, списки писем в Kerio Connect / Gmail / Yandex / Outlook, открытые письма, таблицы 1С / БелВЭБ / CRM).
+  // Блок про браузер добавляется в системный промпт ТОЛЬКО когда пользователь
+  // сам попросил про браузер/вкладки/почту. Иначе модель не должна даже
+  // упоминать вкладки и не имеет права вызывать browser_tabs.
+  const browserInstructionBlock = isBrowserQuery
+    ? `ВАЖНАЯ ИНСТРУКЦИЯ ПО ДОСТУПУ К БРАУЗЕРУ, ПОЧТЕ (KERIO CONNECT / WEBMAIL) И ПЕРЕПИСКЕ ОТ ИМЕНИ ПОЛЬЗОВАТЕЛЯ (ZiCode Chrome Bridge v2.7):
+1. Пользователь ЯВНО попросил работать с браузером, поэтому у тебя ЕСТЬ полный прямой доступ в реальном времени ко всем открытым вкладкам Google Chrome (включая все вложенные фреймы \`<iframe>\`, списки писем в Kerio Connect / Gmail / Yandex / Outlook, открытые письма, таблицы 1С / БелВЭБ / CRM).
 2. Сейчас в браузере пользователя открыто вкладок: ${freshBrowserTabs.length}.
 Список открытых вкладок:
 ${openTabsSummary}
@@ -775,11 +820,18 @@ ${openTabsSummary}
 4. ПЕРЕПИСКА ОТ ИМЕНИ ПОЛЬЗОВАТЕЛЯ:
    Если пользователь просит ответить определённому отправителю, написать письмо или вести переписку от его имени:
    - Вызови инструмент \`browser_tabs\` с \`action: "reply_email"\` (или \`"compose_email"\`), передав \`senderQuery\` (имя/email отправителя или тему письма), \`messageBody\` (готовый вежливый текст ответа от имени пользователя) и \`autoSend\` (\`true\`, если пользователь попросил сразу отправить, или \`false\`, чтобы вставить текст в открытое окно ответа).
-   - И обязательно приведи полный составленный текст ответа в своём сообщении!
+   - И обязательно приведи полный составленный текст ответа в своём сообщении!`
+    : `РЕЖИМ РАБОТЫ: ЛОКАЛЬНЫЕ ЗАДАЧИ / КОД. Пользователь НЕ просил читать открытые вкладки браузера, почту или веб-страницы. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО вызывать инструмент \`browser_tabs\`, читать вкладки/письма и вообще упоминать браузер или вкладки в ответе. Работай только с рабочей областью (файлами проекта), контекстом выбранного репозитория GitHub и самим вопросом пользователя. Если для задачи реально нужен браузер — коротко предложи пользователю нажать кнопку «🐙 Репозитории» или явно попросить прочитать вкладку, но не лезь в браузер сам.`
 
-Workspace files: [${workspaceSummary}]
-Current Agent: ${agent.name} (${agent.id})
-Active Model: ${model.name} (${provider.id}/${model.id})`
+  const repoInstructionBlock = input.repoContext
+    ? `\n\nРЕЖИМ РАБОТЫ С РЕПОЗИТОРИЕМ GITHUB: активирован репозиторий \`${input.repoContext.repo}\`${
+        input.repoContext.branch ? ` (ветка \`${input.repoContext.branch}\`)` : ""
+      }${
+        input.repoContext.action ? `, тип задачи: «${input.repoContext.action}»` : ""
+      }. Файлы этого репозитория уже загружены в рабочую область ниже — анализируй именно их (README, структуру, исходный код), пиши готовые файлы и команды сборки. При изменении кода возвращай полное содержимое файлов в блоках \`\`\` вместе с путём файла, чтобы пользователь мог отправить изменения на GitHub кнопкой «Push». Не читай вкладки браузера.`
+    : ""
+
+  const systemMessage = `${agent.systemPrompt}\n\n${browserInstructionBlock}${repoInstructionBlock}\n\nWorkspace files: [${workspaceSummary}]\nCurrent Agent: ${agent.name} (${agent.id})\nActive Model: ${model.name} (${provider.id}/${model.id})`
 
   // Build context for any pasted/dropped files and screenshots
   const attachments = input.attachments ?? []
@@ -1083,7 +1135,7 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
         /(kerio|mail|почт|письм|входящ|inbox|roundcube|outlook|gmail|yandex)/i.test(`${t.title} ${t.url}`),
       )
 
-    if (freshBrowserTabs.length > 0 && (hasRefusalPhrase || (isBrowserQuery && !finalContent.trim()))) {
+    if (isBrowserQuery && freshBrowserTabs.length > 0 && (hasRefusalPhrase || !finalContent.trim())) {
       const targetTab =
         (isEmailOrChatQuery && clientMailTab) ||
         matchedTabsByWord[0] ||
@@ -1102,7 +1154,7 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
         `### 🌐 Данные из открытой вкладки «${targetTab?.title || "Браузер Chrome"}» (через ZiCode Chrome Bridge v2.5)\n\n` +
         (targetTab?.content
           ? `#### 📬 Извлечённые письма, заголовки и содержимое всех фреймов вкладки:\n${enrichTabEmailContent(targetTab).slice(0, 8000)}\n\n`
-          : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.6.0** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
+          : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.7.0** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
         `#### Список всех открытых вкладок (${freshBrowserTabs.length}):\n${tabsBulletList}\n\n` +
         `💡 Вы также можете написать: *«Ответь от моего имени отправителю [Имя]: [текст ответа]»* — и агент сам нажмёт «Ответить» во вкладке почты и введёт/отправит сообщение!`
 
@@ -1256,7 +1308,7 @@ async function runAutonomousLocalOpenCodeAgent(params: {
       ? `### 🌐 Открытые страницы вашего браузера Chrome\n\n${listRes.output}\n\n---\n\n#### 📄 Содержимое активной страницы:\n${activeRes.output.slice(0, 3500)}`
       : `### 🌐 Подключение к Google Chrome (ZiCode Browser Bridge v2.5)\n\n` +
         `Чтобы я видел все открытые вкладки и читал письма/страницы в реальном времени:\n` +
-        `1. Скачайте архив расширения [**ZiCode-Chrome-Extension-v2.6.0.zip**](https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip) и распакуйте его.\n` +
+        `1. Скачайте архив расширения [**ZiCode-Chrome-Extension-v2.7.0.zip**](https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip) и распакуйте его.\n` +
         `2. Откройте в браузере \`chrome://extensions\`, включите **«Режим разработчика»** и нажмите **«Загрузить распакованное расширение»**.\n` +
         `3. Нажмите на иконку **ZiCode Chrome Bridge** → **«🔄 Синхронизировать открытые вкладки сейчас»**.`
     onUpdate({ content, reasoning: "", toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })
@@ -1792,6 +1844,129 @@ docker run -d --restart always --name promo-bot -e BOT_TOKEN="ТВОЙ_ТОКЕ�
 1. **QR-код на визитках и в офисе**: сгенерируй QR-код на ссылку \`https://t.me/ТвойБот\` с надписью *«Наведи камеру и забери скидку 15% в Telegram»*.
 2. **Ссылка на сайте и в соцсетях**: поставь кнопку «Рассчитать стоимость в Telegram за 1 минуту» в шапку сайта и Instagram/VK.
 3. **Приветственный бонус (Лид-магнит)**: давай за запуск бота полезный PDF-чек-лист, прайс-лист или купон \`TG-START-15\` — люди охотно запускают бота ради подарка, а ты получаешь их контакт!`
+  }
+
+  // Case B0: Анализ README / репозитория по реально загруженным файлам (работает и без облака)
+  if (/(readme|репозитор|документац|структур\w*\s+проект|архитектур|проанализируй\s+код)/i.test(lower)) {
+    const fileKeys = Object.keys(toolCtx.files || {})
+    const readmeKey =
+      fileKeys.find((f) => /(^|\/)readme\.md$/i.test(f)) ||
+      fileKeys.find((f) => /(^|\/)readme(\.(md|mdx|txt|rst))?$/i.test(f)) ||
+      fileKeys.find((f) => /readme/i.test(f))
+    const readme = readmeKey ? (toolCtx.files[readmeKey] || "").trim() : ""
+
+    const stack: string[] = []
+    const pkgRaw = toolCtx.files["package.json"]
+    if (pkgRaw) {
+      try {
+        const pkg = JSON.parse(pkgRaw)
+        const deps = Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}) })
+        stack.push(`Node.js${pkg.name ? ` · ${pkg.name}` : ""}${pkg.version ? ` v${pkg.version}` : ""}`)
+        const notable = ["react", "vite", "typescript", "electron", "express", "next", "vue", "svelte", "aiogram", "fastapi"]
+        const found = notable.filter((n) => deps.some((d) => d.includes(n)))
+        if (found.length > 0) stack.push(`Ключевые зависимости: ${found.join(", ")}`)
+        if (pkg.scripts) {
+          const scripts = Object.entries(pkg.scripts)
+            .slice(0, 8)
+            .map(([k, v]) => `\`npm run ${k}\` → \`${v}\``)
+            .join("; ")
+          if (scripts) stack.push(`Скрипты: ${scripts}`)
+        }
+      } catch {}
+    }
+    if (toolCtx.files["android/app/build.gradle"]) stack.push("Android (Gradle, Java/Kotlin)")
+    if (fileKeys.some((f) => /requirements\.txt$|pyproject\.toml$/i.test(f))) stack.push("Python")
+    if (fileKeys.some((f) => /Cargo\.toml$/i.test(f))) stack.push("Rust")
+    if (fileKeys.some((f) => /go\.mod$/i.test(f))) stack.push("Go")
+
+    const headings = Array.from(readme.matchAll(/^(#{1,6})\s+(.+)$/gm)).map((m) => ({
+      level: m[1].length,
+      title: m[2].trim(),
+    }))
+    const title = headings.find((h) => h.level === 1)?.title || readmeKey || "Проект"
+    const hasSection = (re: RegExp) => headings.some((h) => re.test(h.title))
+    const missing: string[] = []
+    if (!hasSection(/(установ|install|начало|start|быстрый\s+старт|quick\s*start)/i)) missing.push("Установка и быстрый старт")
+    if (!hasSection(/(сборк|build|запуск|run|деплой|deploy)/i)) missing.push("Сборка и запуск")
+    if (!hasSection(/(архитектор|структур|architecture|structure)/i)) missing.push("Архитектура и структура проекта")
+    if (!hasSection(/(переменн|env|настройк|config|конфигурац)/i)) missing.push("Переменные окружения и настройки")
+    if (!hasSection(/(тест|test)/i)) missing.push("Тесты")
+    if (!hasSection(/(лиценз|license)/i)) missing.push("Лицензия")
+    if (!hasSection(/(скриншот|screenshot|демо|demo)/i)) missing.push("Скриншоты / демонстрация")
+
+    const topDirs = Array.from(
+      new Set(
+        fileKeys
+          .map((f) => (f.includes("/") ? f.split("/")[0] : ""))
+          .filter((d) => d && !/^\./.test(d)),
+      ),
+    ).slice(0, 12)
+    const codeFiles = fileKeys.filter((f) => /\.(ts|tsx|js|jsx|py|java|kt|go|rs|dart|swift)$/i.test(f))
+
+    if (readmeKey || codeFiles.length > 0) {
+      return `# 📖 Анализ README и репозитория: «${title}»
+
+## Что это за проект
+${readmeKey ? `README найден: \`${readmeKey}\` (${readme.length.toLocaleString("ru-RU")} символов, ${headings.length} заголовков).` : "README в загруженных файлах не найден — это первое, что стоит добавить."}
+${readme.split("\n").find((l) => l.trim() && !l.startsWith("#") && !l.startsWith("![") && l.trim().length > 30)?.trim() || "Краткое описание проекта в README не найдено."}
+
+## Технологический стек
+${stack.length > 0 ? stack.map((s) => `- ${s}`).join("\n") : "- Стек не определён по манифестам — уточните зависимости проекта."}
+
+## Структура проекта
+- Загружено файлов: **${fileKeys.length}**, из них исходного кода: **${codeFiles.length}**.
+${topDirs.length > 0 ? `- Каталоги верхнего уровня: ${topDirs.map((d) => `\`${d}/\``).join(", ")}.` : ""}
+${headings.length > 0 ? `- Разделы README: ${headings.slice(0, 16).map((h) => h.title).join(" · ")}.` : ""}
+
+## Что уже хорошо описано
+${headings.length > 0 ? headings.slice(0, 10).map((h) => `- ${h.title}`).join("\n") : "- Пока ничего: README отсутствует или пуст."}
+
+## Чего не хватает в документации
+${missing.length > 0 ? missing.map((m) => `- ❌ ${m}`).join("\n") : "- ✅ Все ключевые разделы присутствуют."}
+
+## Как собрать и запустить
+\`\`\`bash
+${pkgRaw ? "npm install\nnpm run build\nnpm start" : toolCtx.files["requirements.txt"] ? "python -m venv .venv\nsource .venv/bin/activate\npip install -r requirements.txt\npython main.py" : toolCtx.files["android/app/build.gradle"] ? "./gradlew assembleRelease" : "Уточните команды сборки — манифест зависимостей не найден в загруженных файлах."}
+\`\`\`
+
+## Готовый скелет улучшенного README.md
+\`\`\`markdown
+# ${title}
+
+${readme.split("\n").find((l) => l.trim() && !l.startsWith("#"))?.trim() || "Краткое описание проекта в 2–3 предложениях: что делает, для кого, какую задачу решает."}
+
+## Возможности
+- Основная функция 1
+- Основная функция 2
+
+## Технологии
+${stack.length > 0 ? stack.map((s) => `- ${s}`).join("\n") : "- Укажите стек проекта"}
+
+## Установка и запуск
+\`\`\`bash
+Укажите точные команды установки и запуска
+\`\`\`
+
+## Переменные окружения
+| Переменная | Назначение | Обязательна |
+| --- | --- | --- |
+| \`API_KEY\` | Ключ внешнего сервиса | Да |
+
+## Архитектура
+${topDirs.length > 0 ? topDirs.map((d) => `- \`${d}/\` — назначение каталога`).join("\n") : "- Опишите ключевые каталоги и поток данных"}
+
+## Тесты
+\`\`\`bash
+Укажите команду запуска тестов
+\`\`\`
+
+## Лицензия
+Укажите лицензию проекта.
+\`\`\`
+
+> 💡 Отправьте исправленный README на GitHub кнопкой «Push» в панели «🐙 Репозитории» или вставьте файл в редактор рабочей области.`
+
+    }
   }
 
   // Case B: Attached screenshots or files analysis

@@ -10,6 +10,7 @@ const DIST_DIR = path.resolve(__dirname, "..", "dist")
 const TABS_CACHE_FILE = path.join(os.tmpdir(), "zicode-browser-tabs.json")
 
 // In-memory + disk-persisted store of open Chrome tabs pushed by the ZiCode Chrome Extension
+let deepSyncRequestedAt = 0
 let browserTabsStore = {
   updatedAt: 0,
   activeTab: null,
@@ -219,8 +220,8 @@ function createServer(port = PORT, host = HOST) {
       loadPersistedTabs()
       return sendJson(res, 200, {
         status: "ok",
-        engine: "ZiCode (OpenCode Core v2.6.0)",
-        version: "2.6.0",
+        engine: "ZiCode (OpenCode Core v2.7.0)",
+        version: "2.7.0",
         platform: process.platform,
         arch: process.arch,
         browserTabsCount: browserTabsStore.tabs.length,
@@ -270,13 +271,20 @@ function createServer(port = PORT, host = HOST) {
     // 1c. Chrome Extension Bridge: Read synced browser tabs
     if (pathname === "/api/browser/tabs" && req.method === "GET") {
       loadPersistedTabs()
-      return sendJson(res, 200, browserTabsStore)
+      // ?deep=1 — приложение просит расширение один раз прочитать содержимое
+      // открытых вкладок (только по явному запросу пользователя про браузер/почту)
+      const wantsDeep = String(req.url || "").includes("deep=1")
+      if (wantsDeep) deepSyncRequestedAt = Date.now()
+      return sendJson(res, 200, { ...browserTabsStore, deepSyncRequestedAt })
     }
 
     // 1d. Chrome Extension Bridge: Poll pending browser actions
     if (pathname === "/api/browser/actions/pending" && req.method === "GET") {
       const actionsToRun = pendingBrowserActions.splice(0, pendingBrowserActions.length)
-      return sendJson(res, 200, { ok: true, pendingActions: actionsToRun })
+      // Одноразовый флаг: расширение выполнит глубокое чтение вкладок ровно один раз
+      const deepSync = deepSyncRequestedAt > 0 && Date.now() - deepSyncRequestedAt < 20000
+      deepSyncRequestedAt = 0
+      return sendJson(res, 200, { ok: true, pendingActions: actionsToRun, deepSync })
     }
 
     // 1e. Chrome Extension Bridge: Report completed browser action result

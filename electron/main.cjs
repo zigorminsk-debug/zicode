@@ -53,7 +53,7 @@ async function createWindow(port) {
     height: 880,
     minWidth: 920,
     minHeight: 620,
-    title: "ZiCode v2.6 — OpenCode AI Agent + Chrome Bridge (Windows & Android)",
+    title: "ZiCode v2.7 — OpenCode AI Agent + Chrome Bridge (Windows & Android)",
     backgroundColor: "#0a0c10",
     autoHideMenuBar: true,
     webPreferences: {

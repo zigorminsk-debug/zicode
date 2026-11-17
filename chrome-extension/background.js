@@ -803,7 +803,7 @@ async function processPendingActions(actions, serverBaseUrl) {
   }
 }
 
-async function syncOpenTabs(reason = "event") {
+async function syncOpenTabs(reason = "event", opts = {}) {
   if (isSyncing) return lastSyncPayload
   isSyncing = true
   try {
@@ -813,10 +813,24 @@ async function syncOpenTabs(reason = "event") {
       return lastSyncPayload
     }
 
+    // ВАЖНО (v2.7.0): глубокое чтение содержимого страниц (DOM/фреймы/письма)
+    // выполняется ТОЛЬКО по явному запросу ZiCode (пользователь просит прочитать
+    // вкладку/почту) либо по кнопке «Синхронизировать» в попапе расширения.
+    // Фоновые heartbeat/alarm события отправляют только заголовки и URL вкладок,
+    // поэтому расширение больше не «обшаривает» страницы браузера постоянно.
+    const deep = opts.deep === true || reason === "manual" || reason === "post_action" || reason === "deep"
+
     const allTabs = await chrome.tabs.query({})
     const enrichedTabs = []
 
-    // Prioritize active tab and mail/ERP tabs, and extract ALL HTTP/HTTPS tabs (up to 35 tabs, not just 8!)
+    // Кэш ранее извлечённого текста — чтобы не читать страницы повторно без запроса
+    const previousByUrl = new Map()
+    if (Array.isArray(lastSyncPayload?.tabs)) {
+      for (const t of lastSyncPayload.tabs) {
+        if (t?.url && t?.content) previousByUrl.set(t.url, t)
+      }
+    }
+
     const sortedTabs = [...allTabs].sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0))
     let extractedCount = 0
 
@@ -825,9 +839,19 @@ async function syncOpenTabs(reason = "event") {
       const isHttp = /^https?:\/\//i.test(url)
       let snap = { content: "", headings: [], selection: "", metaDescription: "" }
 
-      if (isHttp && extractedCount < 35) {
+      if (deep && isHttp && extractedCount < 35) {
         snap = await extractTabSnapshot(tab)
         extractedCount++
+      } else if (isHttp) {
+        const prev = previousByUrl.get(url)
+        if (prev) {
+          snap = {
+            content: prev.content || "",
+            headings: prev.headings || [],
+            selection: "",
+            metaDescription: prev.metaDescription || "",
+          }
+        }
       }
 
       enrichedTabs.push({
@@ -844,6 +868,7 @@ async function syncOpenTabs(reason = "event") {
         headings: snap.headings || [],
         selection: snap.selection || "",
         metaDescription: snap.metaDescription || "",
+        deep: deep,
         updatedAt: Date.now(),
       })
     }
@@ -852,8 +877,9 @@ async function syncOpenTabs(reason = "event") {
 
     const payload = {
       source: "zicode-chrome-extension",
-      version: "2.5.0",
+      version: "2.7.0",
       reason,
+      deep,
       updatedAt: Date.now(),
       tabs: enrichedTabs,
     }
@@ -918,6 +944,11 @@ setInterval(async () => {
       const data = await res.json()
       if (Array.isArray(data?.pendingActions) && data.pendingActions.length > 0) {
         await processPendingActions(data.pendingActions, baseUrl)
+      }
+      // ZiCode явно попросил прочитать открытые вкладки (пользователь спросил
+      // про браузер/почту) — только тогда делаем глубокое извлечение текста.
+      if (data?.deepSync === true && !isSyncing) {
+        await syncOpenTabs("deep", { deep: true })
       }
     }
   } catch {}

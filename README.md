@@ -1,4 +1,4 @@
-# ZiCode — Аналог OpenCode (v2.3) для Android и Windows
+# ZiCode — Аналог OpenCode (v2.7.0) для Android и Windows
 
 > **ZiCode** — кроссплатформенный AI-агент для программирования под **Android (Signed Release `.apk`)** и **Windows (`.exe` NSIS Installer & Portable)**, повторяющий 100% функционала [OpenCode (`anomalyco/opencode`)](https://github.com/anomalyco/opencode) и поддерживающий весь пул бесплатных ИИ-моделей OpenCode Zen и каталога `models.dev`.
 
@@ -34,6 +34,16 @@
   - `/init`, `/review`, `/models`, `/agent`, `/undo`, `/redo`, `/compact`, `/diff`, `/new`, `/sessions`, `/themes`, `/mcp`, `/terminal`, `/status`, `/export`, `/help`
   - Двойной интерфейс: **Studio GUI** (OpenCode Desktop 2.0) + **Classic TUI Mode** (OpenCode Terminal UI)
 
+- **🐙 Кнопка «Работа с репозиториями GitHub» прямо в чате**:
+  - Открывает список ваших репозиториев (по Personal Access Token) и готовые сценарии:
+    **📖 Анализ README**, **🧭 Полный анализ кода**, **✍️ Дописать код**, **🐞 Исправить ошибки**,
+    **🚀 Сборка в GitHub Actions** (запуск `Run workflow`, статусы запусков, генерация `.github/workflows/build.yml`).
+  - Кнопка **«💬 Просто чат»** выключает режим репозитория — агент выполняет локальные задачи и **не обращается к браузеру**.
+- **Браузер только по явной просьбе**: вкладки Chrome, почта (Kerio Connect / Gmail / Yandex) и веб-страницы
+  читаются **только** если вы сами попросили («прочитай вкладку», «покажи письма»). При задачах по коду/README
+  инструмент `browser_tabs` заблокирован, а расширение Chrome Bridge больше не сканирует страницы в фоне —
+  глубокое чтение выполняется один раз по запросу.
+
 ---
 
 ## 2. Сборка в GitHub Actions и постоянный ключ Android
@@ -42,10 +52,10 @@
 1. **`Build & Sign Android Release APK` (`ubuntu-latest`)**:
    - Собирает веб-ядро ZiCode и синхронизирует ассеты в `android/app/src/main/assets/www`
    - Подписывает APK постоянным релизным ключом PKCS#12 (`zicode-key`, схемы V1 + V2 + V3) из GitHub Secrets (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`)
-   - Публикует артефакт `ZiCode-Android-Signed-APK` (`ZiCode-Android-v2.3.0-Signed-Release.apk`)
+   - Публикует артефакт `ZiCode-Android-Signed-APK` (`ZiCode-Android-v2.7.0-Signed-Release.apk`)
 2. **`Build Windows Desktop (.exe Installer & Portable)` (`windows-latest`)**:
    - Собирает Windows-приложение через `electron-builder --win --x64`
-   - Публикует артефакт `ZiCode-Windows-x64` (`ZiCode-Setup-2.3.0-x64.exe`, `ZiCode-Portable-2.3.0-x64.exe`, `.zip`)
+   - Публикует артефакт `ZiCode-Windows-x64` (`ZiCode-Setup-2.7.0-x64.exe`, `ZiCode-Portable-2.7.0-x64.exe`, `.zip`)
 
 Подробное описание архитектуры OpenCode находится в [`docs/OPENCODE_ANALYSIS.md`](docs/OPENCODE_ANALYSIS.md), а параметры постоянного ключа подписи Android и секретов GitHub — в [`SIGNING.md`](SIGNING.md).
 

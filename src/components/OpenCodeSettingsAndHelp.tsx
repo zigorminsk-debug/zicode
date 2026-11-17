@@ -997,7 +997,7 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
                     Статус: <b>Синхронизировано {browserTabs.length} открытых вкладок</b> через <code>http://127.0.0.1:4096/api/browser/sync</code>.
                   </p>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1013,7 +1013,7 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
                       fontSize: "12px",
                     }}
                   >
-                    <Download size={14} /> Скачать ZiCode-Chrome-Extension-v2.6.0.zip
+                    <Download size={14} /> Скачать ZiCode-Chrome-Extension-v2.7.0.zip
                   </a>
                 </div>
               )}
@@ -2290,6 +2290,48 @@ export const HelpAndGuideView: React.FC<HelpAndGuideProps> = ({
         </button>
       </div>
 
+      {/* SECTION 0: КНОПКА «РАБОТА С РЕПОЗИТОРИЯМИ GITHUB» В ЧАТЕ */}
+      <div
+        style={{
+          padding: "16px",
+          borderRadius: "10px",
+          background: "rgba(56, 189, 248, 0.08)",
+          border: "1px solid var(--accent)",
+          marginBottom: "16px",
+        }}
+      >
+        <h3 style={{ fontSize: "15px", fontWeight: 700, color: "var(--accent)", marginBottom: "8px" }}>
+          🐙 Кнопка «Работа с репозиториями GitHub» в чате
+        </h3>
+        <p style={{ margin: "0 0 8px", color: "var(--text-secondary)" }}>
+          Над полем ввода в чате есть кнопка <b>«🐙 Работа с репозиториями GitHub»</b> (и компактная кнопка{" "}
+          <b>🐙</b> рядом со скрепкой). Она открывает список ваших репозиториев и готовые сценарии:
+        </p>
+        <ol style={{ paddingLeft: "18px", margin: "0 0 8px", color: "var(--text-secondary)" }}>
+          <li>
+            <b>📖 Анализ README</b> — разбор документации: о чём проект, стек, как собрать, чего не хватает, плюс готовый улучшенный <code>README.md</code>.
+          </li>
+          <li>
+            <b>🧭 Полный анализ кода</b> — структура, архитектура, качество кода, безопасность и план улучшений P0/P1/P2.
+          </li>
+          <li>
+            <b>✍️ Дописать код</b> — опишите, что нужно добавить, и агент выдаст готовые файлы целиком.
+          </li>
+          <li>
+            <b>🐞 Исправить ошибки</b> — ревизия проекта и готовые исправления с путями файлов.
+          </li>
+          <li>
+            <b>🚀 Сборка в GitHub Actions</b> — запуск workflow кнопкой <code>Run workflow</code>, просмотр последних запусков
+            или генерация нового <code>.github/workflows/build.yml</code> под стек проекта.
+          </li>
+        </ol>
+        <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "12px" }}>
+          💬 Кнопка <b>«Просто чат»</b> в этом окне (и «× Выйти» над полем ввода) выключает режим репозитория: агент выполняет
+          любые локальные задачи — код, тексты, расчёты — и <b>не читает открытые вкладки браузера</b>. Браузер используется
+          только если вы сами об этом попросите.
+        </p>
+      </div>
+
       {/* SECTION 1: КАК НАСТРОИТЬ ПРОГРАММУ И БЕСПЛАТНЫЕ МОДЕЛИ */}
       <div
         style={{
@@ -2418,12 +2460,12 @@ export const HelpAndGuideView: React.FC<HelpAndGuideProps> = ({
           <li>
             Скачайте архив расширения{" "}
             <a
-              href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
+              href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip"
               target="_blank"
               rel="noreferrer"
               style={{ color: "var(--accent)" }}
             >
-              ZiCode-Chrome-Extension-v2.6.0.zip
+              ZiCode-Chrome-Extension-v2.7.0.zip
             </a>{" "}
             и распакуйте его в любую папку.
           </li>

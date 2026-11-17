@@ -69,6 +69,7 @@ import {
   HelpAndGuideView,
   SettingsTabId,
 } from "./components/OpenCodeSettingsAndHelp"
+import { GitHubReposHub, RepoTaskRequest } from "./components/GitHubReposHub"
 
 function createInitialSession(): SessionInfo {
   const id = `ses_${Date.now().toString(36)}`
@@ -265,6 +266,18 @@ export function App() {
 
   // Prompt composer state
   const [promptInput, setPromptInput] = useState("")
+  // «Работа с репозиториями GitHub»: активный репозиторий и видимость хаба
+  const [showReposHub, setShowReposHub] = useState(false)
+  const [repoContext, setRepoContext] = useState<{ repo: string; branch?: string; action?: string } | null>(() => {
+    const saved = localStorage.getItem("zicode_active_repo")
+    if (!saved) return null
+    try {
+      const parsed = JSON.parse(saved)
+      return parsed?.repo ? parsed : null
+    } catch {
+      return null
+    }
+  })
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([])
   const [isDraggingOverChat, setIsDraggingOverChat] = useState(false)
   const [previewLightboxUrl, setPreviewLightboxUrl] = useState<string | null>(null)
@@ -699,6 +712,32 @@ export function App() {
     URL.revokeObjectURL(url)
   }
 
+  // Persist active GitHub repository mode
+  useEffect(() => {
+    if (repoContext) localStorage.setItem("zicode_active_repo", JSON.stringify(repoContext))
+    else localStorage.removeItem("zicode_active_repo")
+  }, [repoContext])
+
+  // Запуск задачи из хаба «Работа с репозиториями GitHub»
+  const handleRunRepoTurn = async (req: RepoTaskRequest) => {
+    const mergedFiles = { ...files, ...req.files }
+    if (Object.keys(req.files).length > 0) setFiles(mergedFiles)
+    const firstFile =
+      Object.keys(req.files).find((f) => /readme/i.test(f)) || Object.keys(req.files)[0] || activeFilePath
+    if (firstFile) setActiveFilePath(firstFile)
+
+    const nextRepoContext = { repo: req.repo, branch: req.branch, action: req.action }
+    setRepoContext(nextRepoContext)
+    setShowReposHub(false)
+    setCenterTab("chat")
+
+    if (!req.prompt.trim()) return
+    await handleSubmitPrompt(req.prompt, {
+      filesOverride: mergedFiles,
+      repoContext: nextRepoContext,
+    })
+  }
+
   // Run Terminal Command
   const handleRunTerminalCommand = async (cmdText?: string) => {
     const cmd = (cmdText ?? terminalInput).trim()
@@ -720,7 +759,12 @@ export function App() {
   }
 
   // Submit Prompt / Slash Command / !shell / @file / Screenshots & Files
-  const handleSubmitPrompt = async (overrideText?: string) => {
+  const handleSubmitPrompt = async (
+    overrideText?: string,
+    options?: { filesOverride?: Record<string, string>; repoContext?: { repo: string; branch?: string; action?: string } },
+  ) => {
+    const turnFiles = options?.filesOverride ?? files
+    const turnRepoContext = options?.repoContext ?? repoContext
     const currentAttachments = overrideText ? [] : [...pendingAttachments]
     let raw = (overrideText ?? promptInput).trim()
     if ((!raw && currentAttachments.length === 0) || isRunning) return
@@ -780,6 +824,8 @@ export function App() {
         const s = createInitialSession()
         setSessions((prev) => [s, ...prev])
         setActiveSessionId(s.id)
+        // Новый чат всегда начинается без репозитория и без чтения браузера
+        setRepoContext(null)
         return
       }
       if (cmd === "/diff") {
@@ -847,8 +893,8 @@ export function App() {
     let attachedContext = ""
     for (const m of mentionMatches) {
       const fpath = m[1]
-      if (files[fpath] !== undefined) {
-        attachedContext += `\n\n<attached-file path="${fpath}">\n${files[fpath]}\n</attached-file>`
+      if (turnFiles[fpath] !== undefined) {
+        attachedContext += `\n\n<attached-file path="${fpath}">\n${turnFiles[fpath]}\n</attached-file>`
       }
     }
 
@@ -906,9 +952,10 @@ export function App() {
         attachments: currentAttachments,
         apiKeys,
         customBaseUrls,
+        repoContext: turnRepoContext ?? undefined,
         toolCtx: {
           agent: activeAgent,
-          files,
+          files: turnFiles,
           setFiles,
           todos: activeSession.todos,
           setTodos: (todos) => updateActiveSession((s) => ({ ...s, todos })),
@@ -1089,7 +1136,7 @@ export function App() {
                       border: "1px solid var(--border-color)",
                     }}
                   >
-                    OpenCode v2.6
+                    OpenCode v2.7
                   </span>
                 </div>
                 <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>Android APK + Windows EXE</div>
@@ -1600,6 +1647,7 @@ export function App() {
                       const s = createInitialSession()
                       setSessions((prev) => [s, ...prev])
                       setActiveSessionId(s.id)
+                      setRepoContext(null)
                     }}
                     style={{
                       display: "flex",
@@ -1824,7 +1872,7 @@ export function App() {
                     <code className="mono">ANDROID_KEYSTORE_BASE64</code>.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Android-v2.6.0-Signed-Release.apk"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Android-v2.7.0-Signed-Release.apk"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1865,7 +1913,7 @@ export function App() {
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Setup-2.6.0-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Setup-2.7.0-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1884,7 +1932,7 @@ export function App() {
                       <Download size={12} /> Скачать Setup .exe
                     </a>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Portable-2.6.0-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Portable-2.7.0-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1923,7 +1971,7 @@ export function App() {
                     Позволяет ZiCode видеть открытые вкладки вашего браузера и читать текст страниц в реальном времени.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -2117,6 +2165,24 @@ export function App() {
                   flexShrink: 0,
                 }}
               >
+                <button
+                  onClick={() => setShowReposHub(true)}
+                  title="Открыть список репозиториев GitHub: анализ README, дописывание и исправление кода, сборка через GitHub Actions"
+                  style={{
+                    padding: "5px 10px",
+                    borderRadius: "999px",
+                    background: "rgba(56, 189, 248, 0.14)",
+                    border: "1px solid var(--accent)",
+                    fontSize: "11px",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    color: "var(--text-primary)",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  🐙 Работа с репозиториями GitHub
+                </button>
                 {[
                   { label: "🚀 /init (AGENTS.md)", cmd: "/init" },
                   { label: "🔍 /review (Ревью)", cmd: "/review" },
@@ -2583,7 +2649,7 @@ export function App() {
                 </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -2603,13 +2669,25 @@ export function App() {
                   </a>
                   <button
                     onClick={() => {
+                      // Явный запрос пользователя: просим расширение один раз прочитать содержимое вкладок
                       window.postMessage({ type: "ZICODE_REQUEST_BROWSER_SYNC" }, "*")
-                      fetch("/api/browser/tabs")
+                      fetch("/api/browser/tabs?deep=1")
                         .then((r) => r.json())
                         .then((d) => {
                           if (Array.isArray(d?.tabs)) setBrowserTabs(d.tabs)
                         })
                         .catch(() => {})
+                      window.setTimeout(() => {
+                        fetch("/api/browser/tabs")
+                          .then((r) => r.json())
+                          .then((d) => {
+                            if (Array.isArray(d?.tabs)) {
+                              setBrowserTabs(d.tabs)
+                              setBrowserLastSync(Date.now())
+                            }
+                          })
+                          .catch(() => {})
+                      }, 2200)
                     }}
                     style={{
                       padding: "7px 12px",
@@ -2643,12 +2721,12 @@ export function App() {
                   <li>
                     Скачайте архив{" "}
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.6.0/ZiCode-Chrome-Extension-v2.6.0.zip"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip"
                       target="_blank"
                       rel="noreferrer"
                       style={{ color: "var(--accent)" }}
                     >
-                      ZiCode-Chrome-Extension-v2.6.0.zip
+                      ZiCode-Chrome-Extension-v2.7.0.zip
                     </a>{" "}
                     и распакуйте его в любую папку на компьютере (или используйте папку <code>chrome-extension/</code> из
                     репозитория).
@@ -3006,6 +3084,51 @@ export function App() {
               }}
             />
 
+            {/* Active GitHub Repository Mode Indicator */}
+            {repoContext && (
+              <div
+                style={{
+                  marginBottom: "8px",
+                  padding: "6px 10px",
+                  borderRadius: "7px",
+                  background: "rgba(56, 189, 248, 0.12)",
+                  border: "1px solid var(--accent)",
+                  fontSize: "11px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  flexWrap: "wrap",
+                }}
+              >
+                <span style={{ fontWeight: 700 }}>🐙 Режим репозитория:</span>
+                <span className="mono" style={{ wordBreak: "break-all" }}>
+                  {repoContext.repo}
+                  {repoContext.branch ? ` · ${repoContext.branch}` : ""}
+                </span>
+                <span style={{ color: "var(--text-muted)" }}>· браузер не используется</span>
+                <button
+                  onClick={() => {
+                    setRepoContext(null)
+                    setAttachmentToast("Вы вышли из режима репозитория — доступен обычный чат по локальным задачам.")
+                  }}
+                  title="Выйти из режима репозитория и работать как в обычном чате"
+                  style={{
+                    marginLeft: "auto",
+                    background: "transparent",
+                    border: "1px solid var(--border-color)",
+                    borderRadius: "6px",
+                    color: "var(--text-secondary)",
+                    fontSize: "11px",
+                    padding: "3px 8px",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  × Выйти
+                </button>
+              </div>
+            )}
+
             {/* Toast Notification for Copy-Paste / Drag & Drop */}
             {attachmentToast && (
               <div
@@ -3242,6 +3365,28 @@ export function App() {
                   }}
                 >
                   <span>{isMobile ? "📋" : "📋 Вставить скриншот"}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowReposHub(true)}
+                  title="Работа с репозиториями GitHub: анализ, дописывание и исправление кода, сборка через GitHub Actions"
+                  style={{
+                    padding: isMobile ? "10px 10px" : "5px 9px",
+                    borderRadius: "8px",
+                    background: repoContext ? "rgba(56, 189, 248, 0.18)" : "var(--bg-tertiary)",
+                    border: repoContext ? "1px solid var(--accent)" : "1px solid var(--border-color)",
+                    color: "var(--text-primary)",
+                    fontSize: isMobile ? "15px" : "11px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: "5px",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <span>{isMobile ? "🐙" : "🐙 Репозитории"}</span>
                 </button>
                 <button
                   type="button"
@@ -3553,6 +3698,23 @@ export function App() {
           </div>
         </div>
       )}
+
+      {/* =====================================================================
+          MODAL 1B: GITHUB REPOSITORIES HUB («🐙 Работа с репозиториями GitHub»)
+         ===================================================================== */}
+      <GitHubReposHub
+        open={showReposHub}
+        isMobile={isMobile}
+        activeRepo={repoContext ? { repo: repoContext.repo, branch: repoContext.branch || "main" } : null}
+        onClose={() => setShowReposHub(false)}
+        onRunTask={handleRunRepoTurn}
+        onOpenLocalChat={() => {
+          setShowReposHub(false)
+          setRepoContext(null)
+          setCenterTab("chat")
+          setAttachmentToast("Режим «Просто чат»: агент выполняет локальные задачи и не читает вкладки браузера.")
+        }}
+      />
 
       {/* =====================================================================
           MODAL 2: FULL-SCREEN OPENCODE SETTINGS MENU (Exact replica of image-4 & image-5)
