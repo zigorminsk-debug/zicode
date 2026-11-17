@@ -96,4 +96,40 @@ window.addEventListener("message", (event) => {
       )
     } catch {}
   }
+  if (event.data?.type === "ZICODE_AI_PROXY_REQ" && event.data?.reqId && event.data?.url) {
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "AI_PROXY_FETCH",
+          url: event.data.url,
+          headers: event.data.headers || {},
+          body: event.data.body || "",
+        },
+        (resp) => {
+          void chrome.runtime.lastError
+          window.postMessage(
+            {
+              type: "ZICODE_AI_PROXY_RES",
+              reqId: event.data.reqId,
+              ok: Boolean(resp?.ok),
+              status: resp?.status || 0,
+              text: resp?.text || "",
+              error: resp?.error || "",
+            },
+            "*",
+          )
+        },
+      )
+    } catch (err) {
+      window.postMessage(
+        {
+          type: "ZICODE_AI_PROXY_RES",
+          reqId: event.data.reqId,
+          ok: false,
+          error: String(err?.message || err),
+        },
+        "*",
+      )
+    }
+  }
 })

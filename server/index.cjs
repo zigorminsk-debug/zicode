@@ -137,6 +137,21 @@ function parseUpstreamResponse(rawText) {
     }
   }
 
+  if (!/^<!doctype\s+html/i.test(trimmed) && !/^<html/i.test(trimmed)) {
+    return {
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: trimmed,
+          },
+          finish_reason: "stop",
+        },
+      ],
+    }
+  }
+
   return { raw: rawText }
 }
 

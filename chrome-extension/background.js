@@ -963,6 +963,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ ok: true })
       return false
     }
+    if (msg?.type === "AI_PROXY_FETCH" && msg.url) {
+      fetch(msg.url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream, application/json",
+          ...(msg.headers || {}),
+        },
+        body: msg.body,
+      })
+        .then(async (r) => {
+          const text = await r.text()
+          sendResponse({ ok: r.ok, status: r.status, text })
+        })
+        .catch((err) => {
+          sendResponse({ ok: false, status: 0, error: String(err?.message || err) })
+        })
+      return true
+    }
   } catch {}
   return false
 })
