@@ -68,8 +68,15 @@ jobs:
             unzip -q /tmp/gradle.zip -d /tmp
             export PATH="/tmp/gradle-8.7/bin:$PATH"
           fi
-          gradle -p android assembleRelease --no-daemon > /tmp/android-build.log 2>&1
-          CODE=$?
+          # Повторяем сборку при кратковременных сбоях Maven Central
+          CODE=1
+          for attempt in 1 2 3; do
+            gradle -p android assembleRelease --no-daemon > /tmp/android-build.log 2>&1
+            CODE=$?
+            if [ $CODE -eq 0 ]; then break; fi
+            echo "Gradle attempt $attempt failed (exit $CODE), retrying in 15s..."
+            sleep 15
+          done
           cat /tmp/android-build.log
           if [ $CODE -ne 0 ]; then
             MSG=$(tail -n 20 /tmp/android-build.log | tr '\n' ' ')
@@ -119,8 +126,17 @@ jobs:
         run: |
           set +e
           rm -f package-lock.json
-          npm install > /tmp/win-install.log 2>&1
-          ICODE=$?
+          npm config set fetch-retries 5
+          npm config set fetch-retry-mintimeout 20000
+          npm config set fetch-retry-maxtimeout 120000
+          ICODE=1
+          for attempt in 1 2 3; do
+            npm install > /tmp/win-install.log 2>&1
+            ICODE=$?
+            if [ $ICODE -eq 0 ]; then break; fi
+            echo "npm install attempt $attempt failed (exit $ICODE), retrying in 15s..."
+            sleep 15
+          done
           if [ $ICODE -ne 0 ]; then
             cat /tmp/win-install.log
             MSG=$(tail -n 15 /tmp/win-install.log | tr '\n' ' ')
@@ -128,8 +144,14 @@ jobs:
             exit $ICODE
           fi
           npm run build > /tmp/win-build.log 2>&1
-          npx electron-builder --win nsis portable zip --x64 --publish never >> /tmp/win-build.log 2>&1
-          BCODE=$?
+          BCODE=1
+          for attempt in 1 2; do
+            npx electron-builder --win nsis portable zip --x64 --publish never >> /tmp/win-build.log 2>&1
+            BCODE=$?
+            if [ $BCODE -eq 0 ]; then break; fi
+            echo "electron-builder attempt $attempt failed (exit $BCODE), retrying in 15s..."
+            sleep 15
+          done
           cat /tmp/win-build.log
           if [ $BCODE -ne 0 ]; then
             MSG=$(tail -n 20 /tmp/win-build.log | tr '\n' ' ')
