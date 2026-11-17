@@ -49,24 +49,26 @@ function extractPageSnapshot() {
   }
 }
 
-// Listen for messages from the background service worker
+// Listen for messages from the background service worker (synchronous response -> return false)
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === "EXTRACT_PAGE_SNAPSHOT") {
-    sendResponse(extractPageSnapshot())
-    return true
-  }
+  try {
+    if (msg?.type === "EXTRACT_PAGE_SNAPSHOT") {
+      sendResponse(extractPageSnapshot())
+      return false
+    }
 
-  if (msg?.type === "ZICODE_EXTENSION_BROADCAST") {
-    window.postMessage(
-      {
-        type: "ZICODE_BROWSER_SYNC",
-        payload: msg.payload,
-      },
-      "*",
-    )
-    sendResponse({ ok: true })
-    return true
-  }
+    if (msg?.type === "ZICODE_EXTENSION_BROADCAST") {
+      window.postMessage(
+        {
+          type: "ZICODE_BROWSER_SYNC",
+          payload: msg.payload,
+        },
+        "*",
+      )
+      sendResponse({ ok: true })
+      return false
+    }
+  } catch {}
   return false
 })
 
@@ -75,7 +77,9 @@ window.addEventListener("message", (event) => {
   if (event.source !== window) return
   if (event.data?.type === "ZICODE_REQUEST_BROWSER_SYNC") {
     try {
-      chrome.runtime.sendMessage({ type: "TRIGGER_SYNC_NOW" })
+      chrome.runtime.sendMessage({ type: "TRIGGER_SYNC_NOW" }, () => {
+        void chrome.runtime.lastError
+      })
     } catch {}
   }
 })

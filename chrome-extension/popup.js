@@ -6,9 +6,14 @@ const tabsContainer = document.getElementById("tabsContainer")
 const statusBadge = document.getElementById("statusBadge")
 
 async function initPopup() {
-  const stored = await chrome.storage.local.get(["serverUrl", "autoSync"])
-  serverUrlInput.value = stored.serverUrl || "http://127.0.0.1:4096"
-  autoSyncCheck.checked = stored.autoSync !== false
+  try {
+    const stored = await chrome.storage.local.get(["serverUrl", "autoSync", "lastSyncPayload"])
+    serverUrlInput.value = stored.serverUrl || "http://127.0.0.1:4096"
+    autoSyncCheck.checked = stored.autoSync !== false
+    if (stored.lastSyncPayload && Array.isArray(stored.lastSyncPayload.tabs)) {
+      renderTabs(stored.lastSyncPayload)
+    }
+  } catch {}
   triggerSync()
 }
 
@@ -32,7 +37,7 @@ function renderTabs(payload) {
     try {
       hostSpan.textContent = new URL(t.url).hostname
     } catch {
-      hostSpan.textContent = t.url.slice(0, 30)
+      hostSpan.textContent = (t.url || "").slice(0, 30)
     }
     const lenSpan = document.createElement("span")
     lenSpan.textContent = t.content ? `${t.content.length} симв.` : "системная"
@@ -47,22 +52,41 @@ function renderTabs(payload) {
 
 function triggerSync() {
   syncBtn.textContent = "⏳ Синхронизация..."
-  chrome.runtime.sendMessage({ type: "TRIGGER_SYNC_NOW" }, (res) => {
+  try {
+    chrome.runtime.sendMessage({ type: "TRIGGER_SYNC_NOW" }, (res) => {
+      // Always consume runtime.lastError so Chrome never logs "The message port closed before a response was received"
+      void chrome.runtime.lastError
+      syncBtn.textContent = "🔄 Синхронизировать открытые вкладки сейчас"
+      if (res && Array.isArray(res.tabs)) {
+        renderTabs(res)
+      }
+    })
+  } catch {
     syncBtn.textContent = "🔄 Синхронизировать открытые вкладки сейчас"
-    if (res) renderTabs(res)
-  })
+  }
 }
+
+try {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local" && changes.lastSyncPayload?.newValue) {
+      renderTabs(changes.lastSyncPayload.newValue)
+    }
+  })
+} catch {}
 
 syncBtn.addEventListener("click", triggerSync)
 
 serverUrlInput.addEventListener("change", () => {
   chrome.storage.local.set({ serverUrl: serverUrlInput.value.trim() }, () => {
+    void chrome.runtime.lastError
     triggerSync()
   })
 })
 
 autoSyncCheck.addEventListener("change", () => {
-  chrome.storage.local.set({ autoSync: autoSyncCheck.checked })
+  chrome.storage.local.set({ autoSync: autoSyncCheck.checked }, () => {
+    void chrome.runtime.lastError
+  })
 })
 
 initPopup()

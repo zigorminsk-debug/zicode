@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ZiCode Chrome Bridge — Чтение открытых вкладок для OpenCode AI",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "description": "Позволяет программе ZiCode (Windows EXE / Web / Android) видеть список ваших открытых вкладок Chrome и читать текст страниц.",
   "permissions": [
     "tabs",

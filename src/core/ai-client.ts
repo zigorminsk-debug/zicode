@@ -381,26 +381,102 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     .slice(0, 40)
     .join(", ")
 
+  const isBrowserQuery =
+    /(браузер|вкладк|страниц|открыт|хром|chrome|сайт|видишь|видит|прочитай|о чем|о чём|разбери|таблиц|browser|tab|page|url)/i.test(
+      userPrompt,
+    )
+
+  let preExecutedBrowserContext = ""
+
+  // If the user asks anything about their browser/tabs/pages, automatically execute `browser_tabs` tool FIRST
+  if (isBrowserQuery) {
+    const recordList: ToolCallRecord = {
+      id: `tc-browser-list-${Date.now()}`,
+      name: "browser_tabs",
+      args: { action: "list" },
+      status: "running",
+    }
+    toolCalls.push(recordList)
+    onUpdate({
+      content: "",
+      reasoning: `[${model.name}] Чтение открытых вкладок Google Chrome через расширение ZiCode Chrome Bridge...`,
+      toolCalls: [...toolCalls],
+    })
+    const startedList = Date.now()
+    const resList = await executeToolCall("browser_tabs", { action: "list" }, wrappedCtx)
+    recordList.status = resList.isError ? "error" : "completed"
+    recordList.output = resList.output
+    recordList.durationMs = Date.now() - startedList
+    preExecutedBrowserContext += `\n\n=== РЕЗУЛЬТАТ ИНСТРУМЕНТА browser_tabs({"action":"list"}) ===\n${resList.output}`
+
+    // Also read active tab or matching tab by keyword
+    const matchedTab = freshBrowserTabs.find((t) => {
+      const words = userPrompt
+        .toLowerCase()
+        .replace(/[^a-zа-яё0-9\s.-]/gi, " ")
+        .split(/\s+/)
+        .filter((w) => w.length >= 4 && !/^(прочитай|вкладку|вкладка|страницу|страница|браузере|браузер|открыта|открытые|сейчас|какие|меня|видишь|мой)$/i.test(w))
+      return words.some((w) => t.title.toLowerCase().includes(w) || t.url.toLowerCase().includes(w))
+    })
+
+    const readArgs = matchedTab ? { action: "read_tab", query: matchedTab.title.slice(0, 35) } : { action: "read_active" }
+    const recordRead: ToolCallRecord = {
+      id: `tc-browser-read-${Date.now()}`,
+      name: "browser_tabs",
+      args: readArgs,
+      status: "running",
+    }
+    toolCalls.push(recordRead)
+    const startedRead = Date.now()
+    const resRead = await executeToolCall("browser_tabs", readArgs, wrappedCtx)
+    recordRead.status = resRead.isError ? "error" : "completed"
+    recordRead.output = resRead.output
+    recordRead.durationMs = Date.now() - startedRead
+    preExecutedBrowserContext += `\n\n=== РЕЗУЛЬТАТ ИНСТРУМЕНТА browser_tabs(${JSON.stringify(readArgs)}) ===\n${resRead.output}`
+
+    onUpdate({
+      content: "",
+      reasoning: `[${model.name}] Получены данные о ${freshBrowserTabs.length} открытых вкладках Chrome. Формирую ответ...`,
+      toolCalls: [...toolCalls],
+    })
+  }
+
   const openTabsSummary =
     freshBrowserTabs && freshBrowserTabs.length > 0
       ? freshBrowserTabs
-          .slice(0, 18)
-          .map((t) => `[${t.active ? "ACTIVE" : "TAB"}] ${t.title} (${t.url})`)
-          .join(" | ")
-      : "No tabs synced yet (use browser_tabs tool or ZiCode Chrome Extension)"
+          .slice(0, 25)
+          .map((t, idx) => `${idx + 1}. [${t.active ? "АКТИВНАЯ ВКЛАДКА" : "ВКЛАДКА"}] "${t.title}" — ${t.url}${t.content ? ` (${t.content.length} симв. текста)` : ""}`)
+          .join("\n")
+      : "Вкладки ещё не синхронизированы (установите расширение ZiCode Chrome Bridge)"
 
-  const systemMessage = `${agent.systemPrompt}\n\nWorkspace files: [${workspaceSummary}]\nOpen Chrome Browser Tabs: ${openTabsSummary}\nCurrent Agent: ${agent.name} (${agent.id})\nActive Model: ${model.name} (${provider.id}/${model.id})`
+  const systemMessage = `${agent.systemPrompt}
+
+ВАЖНАЯ ИНСТРУКЦИЯ ПО ДОСТУПУ К БРАУЗЕРУ (ZiCode Chrome Bridge):
+У тебя ЕСТЬ прямой доступ в реальном времени к браузеру Google Chrome пользователя через подключённое расширение ZiCode Chrome Bridge!
+Сейчас в браузере пользователя реально открыто вкладок: ${freshBrowserTabs.length}.
+Список открытых вкладок пользователя прямо сейчас:
+${openTabsSummary}
+
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «Я не имею прямого доступа к вашему браузеру» или «Я не могу видеть открытые вкладки»! Ты УЖЕ видишь все открытые вкладки и текст страниц выше. Всегда отвечай конкретно по этим вкладкам и их содержимому.
+
+Workspace files: [${workspaceSummary}]
+Current Agent: ${agent.name} (${agent.id})
+Active Model: ${model.name} (${provider.id}/${model.id})`
+
+  const effectiveUserPrompt = preExecutedBrowserContext
+    ? `${userPrompt}\n\n[СИСТЕМНЫЕ ДАННЫЕ ZICODE CHROME BRIDGE — ПРЯМОЙ ДОСТУП К БРАУЗЕРУ ПОЛЬЗОВАТЕЛЯ АКТИВЕН! Вот реальные открытые вкладки и содержимое страниц пользователя прямо сейчас:]${preExecutedBrowserContext}\n\n[ИНСТРУКЦИЯ: Ответь пользователю на основе этих реальных открытых вкладок его браузера. Никогда не говори, что у тебя нет доступа к браузеру!]`
+    : userPrompt
 
   const apiMessages: any[] = [
     { role: "system", content: systemMessage },
     ...session.messages
       .filter((m) => !m.isSyntheticReminder && m.id !== "msg-welcome")
-      .slice(-12)
+      .slice(-10)
       .map((m) => ({
         role: m.role === "tool" ? "user" : m.role,
         content: m.content,
       })),
-    { role: "user", content: userPrompt },
+    { role: "user", content: effectiveUserPrompt },
   ]
 
   // Try live OpenCode Zen / Provider API with multi-step tool loop (up to 4 iterations)
@@ -514,6 +590,48 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
       } else {
         throw new Error("Unexpected response structure")
       }
+    }
+
+    // Zero-Refusal Safeguard: if Chrome tabs ARE synced, never allow any model to claim it lacks browser access
+    const hasRefusalPhrase =
+      /(не имею прямого доступа|не могу\s*[«"]?видеть|нет доступа к вашему браузеру|не вижу ваш браузер|do not have direct access|cannot see your browser)/i.test(
+        finalContent,
+      )
+
+    if (freshBrowserTabs.length > 0 && (hasRefusalPhrase || (isBrowserQuery && !finalContent.trim()))) {
+      const activeTab = freshBrowserTabs.find((t) => t.active) || freshBrowserTabs[0]
+      const tabsBulletList = freshBrowserTabs
+        .map(
+          (t, i) =>
+            `${i + 1}. ${t.active ? "🟢 **[АКТИВНАЯ]** " : ""}**${t.title || "Без названия"}** — \`${t.url}\`${
+              t.content ? ` *(прочитано ${t.content.length} симв. текста)*` : ""
+            }`,
+        )
+        .join("\n")
+
+      finalContent =
+        `Да, **я вижу ваш браузер Google Chrome в реальном времени** через подключённое расширение **ZiCode Chrome Bridge**!\n\n` +
+        `Сейчас у вас открыто **${freshBrowserTabs.length} вкладок**:\n${tabsBulletList}\n\n` +
+        (activeTab
+          ? `### 📄 Текущая активная вкладка: **${activeTab.title}**\n- **URL:** \`${activeTab.url}\`\n` +
+            (activeTab.headings && activeTab.headings.length > 0
+              ? `- **Заголовки на странице:** ${activeTab.headings.slice(0, 8).join(" · ")}\n`
+              : "") +
+            (activeTab.content
+              ? `\n**Фрагмент содержимого страницы:**\n> ${activeTab.content.slice(0, 1200).replace(/\n+/g, "\n> ")}${
+                  activeTab.content.length > 1200 ? "…" : ""
+                }\n`
+              : "")
+          : "") +
+        `\nНапишите, какую именно из этих ${freshBrowserTabs.length} вкладок разобрать подробнее, извлечь из неё данные, таблицы или код!`
+
+      onUpdate({
+        content: finalContent,
+        reasoning: finalReasoning,
+        toolCalls: [...toolCalls],
+        question: latestQuestion,
+        artifact: latestArtifact,
+      })
     }
 
     if (finalContent || toolCalls.length > 0) {
