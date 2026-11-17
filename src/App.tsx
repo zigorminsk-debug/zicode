@@ -1349,7 +1349,7 @@ export function App() {
             {sidebarTab === "builds" && (
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 <div style={{ fontSize: "11px", fontWeight: 700, color: "var(--text-secondary)" }}>
-                  СБОРКИ ANDROID &amp; WINDOWS (GITHUB ACTIONS)
+                  ПРЯМЫЕ ССЫЛКИ ДЛЯ СКАЧИВАНИЯ (GITHUB RELEASES v2.3.0)
                 </div>
 
                 <div
@@ -1365,12 +1365,31 @@ export function App() {
                     <Smartphone size={14} color="var(--success)" />
                     <span>Android Signed Release APK</span>
                   </div>
-                  <div style={{ color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                  <div style={{ color: "var(--text-secondary)", lineHeight: 1.4, marginBottom: "8px" }}>
                     Пакет: <code className="mono">ai.zicode.opencode</code>
                     <br />
                     Подпись: Постоянный ключ PKCS#12 (<code className="mono">zicode-key</code>, V1+V2+V3) из GitHub Secrets{" "}
                     <code className="mono">ANDROID_KEYSTORE_BASE64</code>.
                   </div>
+                  <a
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Android-v2.3.0-Signed-Release.apk"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "6px 10px",
+                      borderRadius: "6px",
+                      background: "var(--success)",
+                      color: "#0a0c10",
+                      fontWeight: 700,
+                      textDecoration: "none",
+                      fontSize: "11px",
+                    }}
+                  >
+                    <Download size={12} /> Скачать APK (Direct)
+                  </a>
                 </div>
 
                 <div
@@ -1386,11 +1405,52 @@ export function App() {
                     <Monitor size={14} color="var(--accent-secondary)" />
                     <span>Windows Desktop (.exe)</span>
                   </div>
-                  <div style={{ color: "var(--text-secondary)", lineHeight: 1.4 }}>
+                  <div style={{ color: "var(--text-secondary)", lineHeight: 1.4, marginBottom: "8px" }}>
                     Сборка: Electron Builder (<code className="mono">windows-latest</code>)
                     <br />
-                    Артефакты: <code className="mono">ZiCode-Setup-x64.exe</code> +{" "}
-                    <code className="mono">ZiCode-Portable-x64.exe</code>.
+                    Артефакты: <code className="mono">ZiCode-Setup-2.3.0-x64.exe</code> +{" "}
+                    <code className="mono">ZiCode-Portable-2.3.0-x64.exe</code>.
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                    <a
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Setup-2.3.0-x64.exe"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "6px 10px",
+                        borderRadius: "6px",
+                        background: "var(--accent)",
+                        color: "#0a0c10",
+                        fontWeight: 700,
+                        textDecoration: "none",
+                        fontSize: "11px",
+                      }}
+                    >
+                      <Download size={12} /> Скачать Setup .exe
+                    </a>
+                    <a
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Portable-2.3.0-x64.exe"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "6px 10px",
+                        borderRadius: "6px",
+                        background: "var(--bg-elevated)",
+                        color: "var(--text-primary)",
+                        border: "1px solid var(--border-color)",
+                        fontWeight: 600,
+                        textDecoration: "none",
+                        fontSize: "11px",
+                      }}
+                    >
+                      <Download size={12} /> Скачать Portable .exe
+                    </a>
                   </div>
                 </div>
               </div>

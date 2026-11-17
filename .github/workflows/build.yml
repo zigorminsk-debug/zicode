@@ -77,6 +77,7 @@ jobs:
             exit $CODE
           fi
           cp android/app/build/outputs/apk/release/app-release.apk ZiCode-Android-v2.3.0-Signed-Release.apk
+          unzip -l ZiCode-Android-v2.3.0-Signed-Release.apk
           CERT_INFO=$(keytool -printcert -jarfile ZiCode-Android-v2.3.0-Signed-Release.apk | grep -E "Owner:|SHA256:" | tr '\n' ' ')
           echo "::notice title=Android APK Signed Successfully::$CERT_INFO"
 
@@ -86,6 +87,17 @@ jobs:
           name: ZiCode-Android-Signed-APK
           path: ZiCode-Android-v2.3.0-Signed-Release.apk
           if-no-files-found: error
+
+      - name: Publish Signed APK to GitHub Releases (Direct Download Link)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view v2.3.0 >/dev/null 2>&1 || \
+            gh release create v2.3.0 \
+              --target "${{ github.sha }}" \
+              --title "ZiCode v2.3.0 — OpenCode for Android (Signed APK) & Windows (.exe)" \
+              --notes "Автоматическая сборка ZiCode v2.3.0 (100% функционал OpenCode + бесплатные модели OpenCode Zen / models.dev) для Android и Windows."
+          gh release upload v2.3.0 ZiCode-Android-v2.3.0-Signed-Release.apk --clobber
 
   build-windows:
     name: Build Windows Desktop (.exe Installer & Portable)
@@ -132,3 +144,19 @@ jobs:
             release-builds/*.exe
             release-builds/*.zip
           if-no-files-found: error
+
+      - name: Publish Windows EXE to GitHub Releases (Direct Download Links)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view v2.3.0 >/dev/null 2>&1 || \
+            gh release create v2.3.0 \
+              --target "${{ github.sha }}" \
+              --title "ZiCode v2.3.0 — OpenCode for Android (Signed APK) & Windows (.exe)" \
+              --notes "Автоматическая сборка ZiCode v2.3.0 (100% функционал OpenCode + бесплатные модели OpenCode Zen / models.dev) для Android и Windows."
+          gh release upload v2.3.0 \
+            release-builds/ZiCode-Setup-2.3.0-x64.exe \
+            release-builds/ZiCode-Portable-2.3.0-x64.exe \
+            release-builds/ZiCode-2.3.0-x64.zip \
+            --clobber
