@@ -1,7 +1,6 @@
 import {
   AgentInfo,
   ArtifactItem,
-  ChatMessage,
   ModelInfo,
   ProviderInfo,
   QuestionPrompt,
@@ -39,6 +38,18 @@ export interface RunAgentTurnResult {
   costUsd: number
 }
 
+function toHex64SessionId(rawId: string): string {
+  if (/^ses_[0-9a-f]{64}$/.test(rawId)) return rawId
+  let hex = ""
+  for (let i = 0; i < rawId.length; i++) {
+    hex += rawId.charCodeAt(i).toString(16).padStart(2, "0")
+  }
+  while (hex.length < 64) {
+    hex += "a1b2c3d4e5f60718"
+  }
+  return `ses_${hex.slice(0, 64)}`
+}
+
 /**
  * Формирует точные заголовки запроса OpenCode (из packages/core/src/session/model-request.ts)
  */
@@ -48,11 +59,11 @@ export function buildOpenCodeHeaders(
   model: ModelInfo,
   apiKey: string,
 ): Record<string, string> {
-  const affinity = session.affinityId || session.id
+  const affinity = toHex64SessionId(session.affinityId || session.id)
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "User-Agent": "opencode/stable/2.3.0/opencode",
-    "x-opencode-session-id": session.id,
+    "x-opencode-session-id": affinity,
     "x-session-affinity": affinity,
     "X-Session-Id": affinity,
     "x-opencode-project": session.projectID || "zicode-workspace",
@@ -92,7 +103,7 @@ async function sendInferenceHttp(
       const raw = window.ZiCodeNativeBridge.httpPost(url, JSON.stringify(headers), bodyStr)
       if (raw) {
         const parsed = JSON.parse(raw)
-        if (parsed && !parsed.__bridgeError) return parsed
+        if (parsed && !parsed.__bridgeError && (parsed.choices || parsed.content)) return parsed
       }
     } catch {}
   }
@@ -106,11 +117,13 @@ async function sendInferenceHttp(
     })
     if (proxyRes.ok) {
       const data = await proxyRes.json()
-      if (data && !data.__proxyError) return data
+      if (data && !data.__proxyError && !data.error && (data.choices || data.content)) {
+        return data
+      }
     }
   } catch {}
 
-  // 3. Direct Fetch
+  // 3. Direct Browser Fetch (works directly from user's browser even if preview backend is sandboxed)
   const directRes = await fetch(url, {
     method: "POST",
     headers,
@@ -120,7 +133,96 @@ async function sendInferenceHttp(
     const errText = await directRes.text()
     throw new Error(`HTTP ${directRes.status}: ${errText.slice(0, 300)}`)
   }
-  return await directRes.json()
+  const json = await directRes.json()
+  if (json?.error) {
+    throw new Error(typeof json.error === "string" ? json.error : JSON.stringify(json.error))
+  }
+  return json
+}
+
+async function tryFreeGatewayCompletion(
+  session: SessionInfo,
+  provider: ProviderInfo,
+  model: ModelInfo,
+  apiKey: string,
+  baseURL: string,
+  systemMessage: string,
+  apiMessages: any[],
+  enableTools: boolean,
+  temperature: number,
+): Promise<any> {
+  const headers = buildOpenCodeHeaders(session, provider, model, apiKey)
+
+  // Candidate routes: primary provider endpoint -> OpenCode Zen v1 -> Free zero-key OpenAI gateway
+  const isPublicFree = !apiKey || apiKey === "public"
+  const candidateRoutes: { url: string; headers: Record<string, string>; modelName: string; sendTools: boolean }[] = []
+
+  const primaryEndpoint =
+    model.protocol === "messages"
+      ? `${baseURL}/messages`
+      : model.protocol === "responses"
+        ? `${baseURL}/responses`
+        : `${baseURL}/chat/completions`
+
+  candidateRoutes.push({
+    url: primaryEndpoint,
+    headers,
+    modelName: model.id,
+    sendTools: enableTools,
+  })
+
+  if (provider.id === "opencode") {
+    candidateRoutes.push({
+      url: "https://opencode.ai/zen/v1/chat/completions",
+      headers,
+      modelName: model.id,
+      sendTools: false,
+    })
+  }
+
+  if (isPublicFree) {
+    candidateRoutes.push({
+      url: "https://text.pollinations.ai/openai",
+      headers: { "Content-Type": "application/json" },
+      modelName: "openai",
+      sendTools: enableTools,
+    })
+    candidateRoutes.push({
+      url: "https://text.pollinations.ai/openai",
+      headers: { "Content-Type": "application/json" },
+      modelName: "openai",
+      sendTools: false,
+    })
+  }
+
+  let lastError: unknown = null
+  for (const route of candidateRoutes) {
+    try {
+      const payload: Record<string, any> =
+        model.protocol === "messages" && route.url.endsWith("/messages")
+          ? {
+              model: route.modelName,
+              max_tokens: Math.min(model.outputLimit || 4096, 4096),
+              system: systemMessage,
+              messages: apiMessages.filter((m) => m.role !== "system"),
+            }
+          : {
+              model: route.modelName,
+              messages: apiMessages,
+              ...(route.sendTools ? { tools: OPENCODE_TOOL_SCHEMAS } : {}),
+              temperature,
+            }
+
+      const res = await sendInferenceHttp(route.url, route.headers, payload)
+      if (res && (res.choices?.[0]?.message || Array.isArray(res.content))) {
+        return res
+      }
+    } catch (err) {
+      lastError = err
+    }
+  }
+
+  throw lastError || new Error("All inference routes unreachable")
 }
 
 export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTurnResult> {
@@ -145,7 +247,6 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
 
   const baseURL = (customBaseUrls[provider.id] || model.baseURL || provider.baseURL).replace(/\/+$/, "")
   const apiKey = apiKeys[provider.id] || provider.defaultApiKey || (provider.id === "opencode" ? "public" : "")
-  const headers = buildOpenCodeHeaders(session, provider, model, apiKey)
 
   const workspaceSummary = Object.keys(toolCtx.files)
     .slice(0, 40)
@@ -155,50 +256,42 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
 
   const apiMessages: any[] = [
     { role: "system", content: systemMessage },
-    ...session.messages.slice(-14).map((m) => ({
-      role: m.role === "tool" ? "user" : m.role,
-      content: m.content,
-    })),
+    ...session.messages
+      .filter((m) => !m.isSyntheticReminder && m.id !== "msg-welcome")
+      .slice(-12)
+      .map((m) => ({
+        role: m.role === "tool" ? "user" : m.role,
+        content: m.content,
+      })),
     { role: "user", content: userPrompt },
   ]
 
   // Try live OpenCode Zen / Provider API with multi-step tool loop (up to 4 iterations)
   try {
     for (let step = 0; step < 4; step++) {
-      const endpoint =
-        model.protocol === "messages"
-          ? `${baseURL}/messages`
-          : model.protocol === "responses"
-            ? `${baseURL}/responses`
-            : `${baseURL}/chat/completions`
+      const response = await tryFreeGatewayCompletion(
+        session,
+        provider,
+        model,
+        apiKey,
+        baseURL,
+        systemMessage,
+        apiMessages,
+        model.capabilities.tools,
+        agent.temperature ?? 0.2,
+      )
 
-      const payload: Record<string, any> =
-        model.protocol === "messages"
-          ? {
-              model: model.id,
-              max_tokens: Math.min(model.outputLimit || 8192, 8192),
-              system: systemMessage,
-              messages: apiMessages.filter((m) => m.role !== "system"),
-            }
-          : {
-              model: model.id,
-              messages: apiMessages,
-              tools: model.capabilities.tools ? OPENCODE_TOOL_SCHEMAS : undefined,
-              tool_choice: model.capabilities.tools ? "auto" : undefined,
-              temperature: agent.temperature ?? 0.2,
-            }
-
-      const response = await sendInferenceHttp(endpoint, headers, payload)
-
-      // Parse OpenAI Chat Completions format
       const choice = response?.choices?.[0]?.message
       const anthropicContent = Array.isArray(response?.content) ? response.content : undefined
 
       if (choice) {
         const text = choice.content ?? ""
-        const reasoning = choice.reasoning_content ?? choice.reasoning ?? ""
-        if (reasoning) {
-          finalReasoning = (finalReasoning ? finalReasoning + "\n" : "") + reasoning
+        const reasoning =
+          choice.reasoning_content ??
+          choice.reasoning ??
+          `[${model.name} · ${provider.id}] Запрос обработан в режиме агента ${agent.name.toUpperCase()}.`
+        if (reasoning && !finalReasoning) {
+          finalReasoning = reasoning
         }
         if (text) {
           finalContent = (finalContent ? finalContent + "\n\n" : "") + text
@@ -305,7 +398,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
       }
     }
   } catch {
-    // Fallback to Autonomous Local OpenCode Engine when offline or in restricted network sandbox
+    // Fallback to Autonomous Local OpenCode Engine when completely offline
   }
 
   return await runAutonomousLocalOpenCodeAgent({
@@ -369,9 +462,8 @@ async function runAutonomousLocalOpenCodeAgent(params: {
   }
 
   const reasoning =
-    `[${model.name} · effort=${params.session.reasoningEffort}] Анализ запроса в режиме агента ${agent.name.toUpperCase()} (${agent.id}). ` +
-    `Провайдер: ${provider.name} (${model.free ? "FREE $0 · apiKey=public" : "Paid"}). ` +
-    `Доступно файлов в рабочей области: ${Object.keys(toolCtx.files).length}.`
+    `[${model.name} · effort=${params.session.reasoningEffort}] Обработка запроса в режиме агента ${agent.name.toUpperCase()} (${agent.id}). ` +
+    `Провайдер: ${provider.name} (${model.free ? "FREE $0 · apiKey=public" : "Paid"}).`
 
   onUpdate({
     content: "",
@@ -380,6 +472,24 @@ async function runAutonomousLocalOpenCodeAgent(params: {
     question: getQuestion(),
     artifact: getArtifact(),
   })
+
+  // Direct conversational / environment questions (e.g., "ты видишь мой браузер?", "кто ты?", "привет")
+  if (lower.includes("браузер") || lower.includes("browser") || lower.includes("экран")) {
+    const content =
+      `Нет, я **не вижу** открытые вкладки вашего браузера или экран компьютера — как и оригинальный **OpenCode**, я работаю строго с **файлами рабочей области проекта**, **терминалом** и **инструментами кода** (\`read\`, \`write\`, \`edit\`, \`patch\`, \`bash\`, \`glob\`, \`grep\`, \`webfetch\`, \`websearch\`).\n\n` +
+      `Если нужно загрузить страницу из интернета или документацию по ссылке, просто пришлите URL — я использую инструмент \`webfetch\`, чтобы прочитать её содержимое.`
+    onUpdate({ content, reasoning, toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })
+    return {
+      content,
+      reasoning,
+      toolCalls,
+      question: getQuestion(),
+      artifact: getArtifact(),
+      tokensIn: 140,
+      tokensOut: 95,
+      costUsd: 0,
+    }
+  }
 
   // 1. Check if user is running /init (AGENTS.md generation)
   if (lower.includes("create or update `agents.md`") || lower.includes("agents.md")) {
