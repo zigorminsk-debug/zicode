@@ -16,6 +16,14 @@ const MIME_TYPES = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",
+  ".zip": "application/zip",
+}
+
+// In-memory store for Chrome Extension synced browser tabs
+let browserState = {
+  updatedAt: 0,
+  activeTab: null,
+  tabs: [],
 }
 
 function readJsonBody(req) {
@@ -23,7 +31,7 @@ function readJsonBody(req) {
     let body = ""
     req.on("data", (chunk) => {
       body += chunk
-      if (body.length > 10 * 1024 * 1024) {
+      if (body.length > 25 * 1024 * 1024) {
         reject(new Error("Payload too large"))
       }
     })
@@ -38,12 +46,17 @@ function readJsonBody(req) {
   })
 }
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Private-Network": "true",
+}
+
 function sendJson(res, status, data) {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    ...CORS_HEADERS,
   })
   res.end(JSON.stringify(data))
 }
@@ -54,11 +67,7 @@ function createServer(port = PORT, host = HOST) {
     const pathname = urlObj.pathname
 
     if (req.method === "OPTIONS") {
-      res.writeHead(204, {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      })
+      res.writeHead(204, CORS_HEADERS)
       return res.end()
     }
 
@@ -69,7 +78,31 @@ function createServer(port = PORT, host = HOST) {
         version: "2.3.0",
         platform: process.platform,
         arch: process.arch,
+        browserTabsCount: browserState.tabs.length,
       })
+    }
+
+    // Chrome Extension Sync Endpoint
+    if (pathname === "/api/browser/sync" && req.method === "POST") {
+      try {
+        const body = await readJsonBody(req)
+        browserState = {
+          updatedAt: Date.now(),
+          activeTab: body.activeTab || null,
+          tabs: Array.isArray(body.tabs) ? body.tabs : [],
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          tabsCount: browserState.tabs.length,
+          updatedAt: browserState.updatedAt,
+        })
+      } catch (err) {
+        return sendJson(res, 400, { error: err.message })
+      }
+    }
+
+    if (pathname === "/api/browser/tabs" && req.method === "GET") {
+      return sendJson(res, 200, browserState)
     }
 
     if (pathname === "/api/models-dev" && req.method === "GET") {

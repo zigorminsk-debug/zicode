@@ -81,23 +81,26 @@ jobs:
           CERT_INFO=$(keytool -printcert -jarfile ZiCode-Android-v2.3.0-Signed-Release.apk | grep -E "Owner:|SHA256:" | tr '\n' ' ')
           echo "::notice title=Android APK Signed Successfully::$CERT_INFO"
 
-      - name: Upload Signed Android APK Artifact
+      - name: Upload Signed Android APK & Chrome Extension Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ZiCode-Android-Signed-APK
-          path: ZiCode-Android-v2.3.0-Signed-Release.apk
+          path: |
+            ZiCode-Android-v2.3.0-Signed-Release.apk
+            public/ZiCode-Chrome-Extension-v2.3.0.zip
           if-no-files-found: error
 
-      - name: Publish Signed APK to GitHub Releases (Direct Download Link)
+      - name: Publish Signed APK & Chrome Extension to GitHub Releases (Direct Download Link)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          cp public/ZiCode-Chrome-Extension-v2.3.0.zip ZiCode-Chrome-Extension-v2.3.0.zip
           gh release view v2.3.0 >/dev/null 2>&1 || \
             gh release create v2.3.0 \
               --target "${{ github.sha }}" \
-              --title "ZiCode v2.3.0 — OpenCode for Android (Signed APK) & Windows (.exe)" \
-              --notes "Автоматическая сборка ZiCode v2.3.0 (100% функционал OpenCode + бесплатные модели OpenCode Zen / models.dev) для Android и Windows."
-          gh release upload v2.3.0 ZiCode-Android-v2.3.0-Signed-Release.apk --clobber
+              --title "ZiCode v2.3.0 — OpenCode for Android (Signed APK), Windows (.exe) & Chrome Extension" \
+              --notes "Автоматическая сборка ZiCode v2.3.0 (100% функционал OpenCode + бесплатные модели OpenCode Zen / models.dev + расширение для чтения вкладок Google Chrome) для Android и Windows."
+          gh release upload v2.3.0 ZiCode-Android-v2.3.0-Signed-Release.apk ZiCode-Chrome-Extension-v2.3.0.zip --clobber
 
   build-windows:
     name: Build Windows Desktop (.exe Installer & Portable)

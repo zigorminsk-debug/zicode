@@ -182,6 +182,18 @@ export interface SkillItem {
   content: string
 }
 
+export interface BrowserTabItem {
+  id: number
+  title: string
+  url: string
+  active: boolean
+  windowId?: number
+  favIconUrl?: string
+  selection?: string
+  headings?: string[]
+  content?: string
+}
+
 export interface ThemeDefinition {
   id: string
   name: string

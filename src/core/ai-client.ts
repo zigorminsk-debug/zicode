@@ -252,7 +252,15 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     .slice(0, 40)
     .join(", ")
 
-  const systemMessage = `${agent.systemPrompt}\n\nWorkspace files: [${workspaceSummary}]\nCurrent Agent: ${agent.name} (${agent.id})\nActive Model: ${model.name} (${provider.id}/${model.id})`
+  const openTabsSummary =
+    toolCtx.browserTabs && toolCtx.browserTabs.length > 0
+      ? toolCtx.browserTabs
+          .slice(0, 15)
+          .map((t) => `[${t.active ? "ACTIVE" : "TAB"}] ${t.title} (${t.url})`)
+          .join(" | ")
+      : "No tabs synced yet (use browser_tabs tool or ZiCode Chrome Extension)"
+
+  const systemMessage = `${agent.systemPrompt}\n\nWorkspace files: [${workspaceSummary}]\nOpen Chrome Browser Tabs: ${openTabsSummary}\nCurrent Agent: ${agent.name} (${agent.id})\nActive Model: ${model.name} (${provider.id}/${model.id})`
 
   const apiMessages: any[] = [
     { role: "system", content: systemMessage },
@@ -473,11 +481,26 @@ async function runAutonomousLocalOpenCodeAgent(params: {
     artifact: getArtifact(),
   })
 
-  // Direct conversational / environment questions (e.g., "ты видишь мой браузер?", "кто ты?", "привет")
-  if (lower.includes("браузер") || lower.includes("browser") || lower.includes("экран")) {
-    const content =
-      `Нет, я **не вижу** открытые вкладки вашего браузера или экран компьютера — как и оригинальный **OpenCode**, я работаю строго с **файлами рабочей области проекта**, **терминалом** и **инструментами кода** (\`read\`, \`write\`, \`edit\`, \`patch\`, \`bash\`, \`glob\`, \`grep\`, \`webfetch\`, \`websearch\`).\n\n` +
-      `Если нужно загрузить страницу из интернета или документацию по ссылке, просто пришлите URL — я использую инструмент \`webfetch\`, чтобы прочитать её содержимое.`
+  // Browser / open Chrome tabs questions (e.g., "ты видишь мой браузер?", "какие вкладки открыты?", "прочитай страницу")
+  if (
+    lower.includes("браузер") ||
+    lower.includes("browser") ||
+    lower.includes("вкладк") ||
+    lower.includes("открытые страниц") ||
+    lower.includes("открытую страниц") ||
+    lower.includes("текущую страниц")
+  ) {
+    const listRes = await runTool("browser_tabs", { action: "list" })
+    const activeRes = await runTool("browser_tabs", { action: "read_active" })
+    const hasTabs = (toolCtx.browserTabs?.length ?? 0) > 0
+    const content = hasTabs
+      ? `### 🌐 Открытые страницы вашего браузера Chrome (через ZiCode Chrome Bridge)\n\n${listRes.output}\n\n---\n\n#### 📄 Содержимое активной страницы:\n\`\`\`text\n${activeRes.output.slice(0, 2000)}\n\`\`\``
+      : `### 🌐 Подключение к Google Chrome (ZiCode Browser Bridge)\n\n` +
+        `Инструмент \`browser_tabs\` готов к чтению ваших открытых вкладок!\n\n` +
+        `Чтобы я видел все открытые вкладки и читал текст страниц в реальном времени:\n` +
+        `1. Скачайте архив расширения [**ZiCode-Chrome-Extension-v2.3.0.zip**](https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Chrome-Extension-v2.3.0.zip) и распакуйте его (или выберите папку \`chrome-extension/\` в репозитории).\n` +
+        `2. Откройте в браузере \`chrome://extensions\`, включите **«Режим разработчика»** (справа вверху) и нажмите **«Загрузить распакованное расширение»**.\n` +
+        `3. Нажмите на иконку **ZiCode Chrome Bridge** → **«🔄 Синхронизировать открытые вкладки сейчас»** (или откройте вкладку **«🌐 Браузер Chrome»** вверху программы).`
     onUpdate({ content, reasoning, toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })
     return {
       content,
@@ -485,8 +508,8 @@ async function runAutonomousLocalOpenCodeAgent(params: {
       toolCalls,
       question: getQuestion(),
       artifact: getArtifact(),
-      tokensIn: 140,
-      tokensOut: 95,
+      tokensIn: 210,
+      tokensOut: 160,
       costUsd: 0,
     }
   }

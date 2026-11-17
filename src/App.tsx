@@ -45,6 +45,7 @@ import { THEMES } from "./core/themes"
 import { executeToolCall } from "./core/tools"
 import {
   ArtifactItem,
+  BrowserTabItem,
   ChatMessage,
   McpServerConfig,
   ModelInfo,
@@ -164,12 +165,16 @@ export function App() {
   // MCP servers
   const [mcpServers, setMcpServers] = useState<McpServerConfig[]>(INITIAL_MCP_SERVERS)
 
+  // Synced Chrome Browser Tabs (via ZiCode Chrome Extension)
+  const [browserTabs, setBrowserTabs] = useState<BrowserTabItem[]>([])
+  const [browserLastSync, setBrowserLastSync] = useState<number>(0)
+
   // Theme & UI mode
   const [themeId, setThemeId] = useState<string>(() => localStorage.getItem("zicode_theme") || "opencode")
   const [uiMode, setUiMode] = useState<"studio" | "tui">("studio")
   const [sidebarTab, setSidebarTab] = useState<"sessions" | "files" | "todos" | "snapshots" | "mcp" | "builds">("files")
   const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false)
-  const [centerTab, setCenterTab] = useState<"chat" | "editor" | "diff" | "architecture">("chat")
+  const [centerTab, setCenterTab] = useState<"chat" | "editor" | "diff" | "browser" | "architecture">("chat")
   const [activeFilePath, setActiveFilePath] = useState<string>("opencode.json")
 
   // Modals
@@ -266,6 +271,40 @@ export function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [activeSession.messages.length, streamingContent, streamingTools.length])
+
+  // Listen for Chrome Extension sync events (both direct window.postMessage and /api/browser/tabs server store)
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (event.data?.type === "ZICODE_BROWSER_SYNC" && event.data?.payload) {
+        const incoming = event.data.payload
+        if (Array.isArray(incoming.tabs)) {
+          setBrowserTabs(incoming.tabs)
+          setBrowserLastSync(Date.now())
+        }
+      }
+    }
+    window.addEventListener("message", onMessage)
+
+    const pollServerTabs = async () => {
+      try {
+        const res = await fetch("/api/browser/tabs")
+        if (res.ok) {
+          const data = await res.json()
+          if (Array.isArray(data?.tabs) && data.tabs.length > 0) {
+            setBrowserTabs(data.tabs)
+            if (data.updatedAt) setBrowserLastSync(data.updatedAt)
+          }
+        }
+      } catch {}
+    }
+
+    pollServerTabs()
+    const timer = window.setInterval(pollServerTabs, 3500)
+    return () => {
+      window.removeEventListener("message", onMessage)
+      window.clearInterval(timer)
+    }
+  }, [])
 
   // Keyboard shortcut: Tab switches Build <-> Plan (when not typing multiline or when pressing Alt+Tab / Shift+Tab)
   useEffect(() => {
@@ -617,6 +656,7 @@ export function App() {
           setTodos: (todos) => updateActiveSession((s) => ({ ...s, todos })),
           mcpServers,
           skills: BUILTIN_SKILLS,
+          browserTabs,
           onArtifact: (art) => setActiveArtifact(art),
         },
         onUpdate: (partial) => {
@@ -1453,6 +1493,43 @@ export function App() {
                     </a>
                   </div>
                 </div>
+
+                <div
+                  style={{
+                    padding: "10px",
+                    borderRadius: "8px",
+                    background: "var(--bg-tertiary)",
+                    border: "1px solid var(--border-color)",
+                    fontSize: "11px",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, marginBottom: "4px" }}>
+                    <Sparkles size={14} color="var(--accent)" />
+                    <span>Расширение для Google Chrome</span>
+                  </div>
+                  <div style={{ color: "var(--text-secondary)", lineHeight: 1.4, marginBottom: "8px" }}>
+                    Позволяет ZiCode видеть открытые вкладки вашего браузера и читать текст страниц в реальном времени.
+                  </div>
+                  <a
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Chrome-Extension-v2.3.0.zip"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "6px 10px",
+                      borderRadius: "6px",
+                      background: "var(--accent-secondary)",
+                      color: "#0a0c10",
+                      fontWeight: 700,
+                      textDecoration: "none",
+                      fontSize: "11px",
+                    }}
+                  >
+                    <Download size={12} /> Скачать Chrome Extension (.zip)
+                  </a>
+                </div>
               </div>
             )}
           </div>
@@ -1472,11 +1549,12 @@ export function App() {
               gap: "8px",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
               {[
                 { id: "chat", label: "Диалог с агентом", icon: <Bot size={13} /> },
                 { id: "editor", label: `Редактор (${activeFilePath})`, icon: <Code2 size={13} /> },
                 { id: "diff", label: `Diff изменений (${sessionDiffs.length})`, icon: <GitBranch size={13} /> },
+                { id: "browser", label: `🌐 Браузер Chrome (${browserTabs.length})`, icon: <Search size={13} /> },
                 { id: "architecture", label: "Анализ OpenCode & Ключ Android", icon: <ShieldCheck size={13} /> },
               ].map((t) => (
                 <button
@@ -1928,6 +2006,222 @@ export function App() {
                     </pre>
                   </div>
                 ))
+              )}
+            </div>
+          )}
+
+          {/* =================================================================
+              TAB 3.5: CHROME BROWSER BRIDGE & OPEN TABS INSPECTOR
+             ================================================================= */}
+          {centerTab === "browser" && (
+            <div style={{ flex: 1, overflowY: "auto", padding: "18px", lineHeight: 1.6, fontSize: "13px" }}>
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  flexWrap: "wrap",
+                  gap: "10px",
+                  marginBottom: "14px",
+                }}
+              >
+                <div>
+                  <h2 style={{ fontSize: "18px", color: "var(--accent)", marginBottom: "4px" }}>
+                    🌐 ZiCode Chrome Bridge — Чтение открытых вкладок браузера
+                  </h2>
+                  <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                    Синхронизировано вкладок: <b>{browserTabs.length}</b>{" "}
+                    {browserLastSync > 0 && (
+                      <span>· Обновлено в {new Date(browserLastSync).toLocaleTimeString()}</span>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <a
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Chrome-Extension-v2.3.0.zip"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "7px 12px",
+                      borderRadius: "6px",
+                      background: "var(--accent)",
+                      color: "#0a0c10",
+                      fontWeight: 700,
+                      textDecoration: "none",
+                      fontSize: "12px",
+                    }}
+                  >
+                    <Download size={14} /> Скачать расширение для Chrome (.zip)
+                  </a>
+                  <button
+                    onClick={() => {
+                      window.postMessage({ type: "ZICODE_REQUEST_BROWSER_SYNC" }, "*")
+                      fetch("/api/browser/tabs")
+                        .then((r) => r.json())
+                        .then((d) => {
+                          if (Array.isArray(d?.tabs)) setBrowserTabs(d.tabs)
+                        })
+                        .catch(() => {})
+                    }}
+                    style={{
+                      padding: "7px 12px",
+                      borderRadius: "6px",
+                      background: "var(--bg-elevated)",
+                      border: "1px solid var(--border-color)",
+                      color: "var(--text-primary)",
+                      fontWeight: 600,
+                      fontSize: "12px",
+                    }}
+                  >
+                    🔄 Обновить вкладки
+                  </button>
+                </div>
+              </div>
+
+              <div
+                style={{
+                  padding: "14px",
+                  borderRadius: "8px",
+                  background: "var(--bg-secondary)",
+                  border: "1px solid var(--border-color)",
+                  marginBottom: "16px",
+                  fontSize: "12px",
+                }}
+              >
+                <div style={{ fontWeight: 700, color: "var(--accent-secondary)", marginBottom: "6px" }}>
+                  Как установить расширение в Google Chrome / Edge / Brave / Яндекс.Браузер за 30 секунд:
+                </div>
+                <ol style={{ paddingLeft: "18px", color: "var(--text-secondary)", margin: 0 }}>
+                  <li>
+                    Скачайте архив{" "}
+                    <a
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Chrome-Extension-v2.3.0.zip"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: "var(--accent)" }}
+                    >
+                      ZiCode-Chrome-Extension-v2.3.0.zip
+                    </a>{" "}
+                    и распакуйте его в любую папку на компьютере (или используйте папку <code>chrome-extension/</code> из
+                    репозитория).
+                  </li>
+                  <li>
+                    Откройте в браузере страницу <code>chrome://extensions</code> и включите переключатель{" "}
+                    <b>«Режим разработчика» (Developer mode)</b> в правом верхнем углу.
+                  </li>
+                  <li>
+                    Нажмите кнопку <b>«Загрузить распакованное расширение» (Load unpacked)</b> и выберите распакованную
+                    папку.
+                  </li>
+                  <li>
+                    Готово! Расширение автоматически передаёт открытые вкладки и их содержимое в ZiCode (и в десктопную
+                    программу Windows через <code>127.0.0.1:4096</code>, и в веб-интерфейс). Теперь вы можете просто
+                    написать в чате: <i>«Прочитай мою открытую вкладку и объясни о чём там речь»</i> или{" "}
+                    <i>«Какие вкладки у меня сейчас открыты в Chrome?»</i>
+                  </li>
+                </ol>
+              </div>
+
+              {browserTabs.length === 0 ? (
+                <div
+                  style={{
+                    padding: "24px",
+                    textAlign: "center",
+                    borderRadius: "8px",
+                    background: "var(--bg-secondary)",
+                    border: "1px dashed var(--border-color)",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  Пока нет синхронизированных вкладок из расширения Chrome. Установите расширение по инструкции выше или
+                  нажмите иконку <b>ZiCode Chrome Bridge</b> в панели расширений браузера.
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {browserTabs.map((t, i) => (
+                    <div
+                      key={`${t.id}-${i}`}
+                      style={{
+                        padding: "12px",
+                        borderRadius: "8px",
+                        background: "var(--bg-secondary)",
+                        border: t.active ? "1px solid var(--accent)" : "1px solid var(--border-color)",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                          gap: "8px",
+                          marginBottom: "6px",
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: "13px", color: "var(--text-primary)" }}>
+                          {t.active && (
+                            <span
+                              style={{
+                                display: "inline-block",
+                                padding: "2px 6px",
+                                borderRadius: "4px",
+                                background: "var(--accent)",
+                                color: "#0a0c10",
+                                fontSize: "10px",
+                                fontWeight: 700,
+                                marginRight: "8px",
+                              }}
+                            >
+                              АКТИВНАЯ ВКЛАДКА
+                            </span>
+                          )}
+                          {t.title || "Без заголовка"}
+                        </div>
+                        <button
+                          onClick={() => {
+                            setCenterTab("chat")
+                            handleSendMessage(
+                              `Прочитай открытую вкладку браузера "${t.title}" (${t.url}) и сделай подробный разбор её содержимого.`,
+                            )
+                          }}
+                          style={{
+                            padding: "5px 10px",
+                            borderRadius: "6px",
+                            background: "var(--accent)",
+                            color: "#0a0c10",
+                            fontWeight: 700,
+                            fontSize: "11px",
+                            flexShrink: 0,
+                          }}
+                        >
+                          Спросить ИИ по этой странице
+                        </button>
+                      </div>
+                      <div className="mono" style={{ fontSize: "11px", color: "var(--accent-secondary)", marginBottom: "6px" }}>
+                        {t.url}
+                      </div>
+                      {t.content && (
+                        <div
+                          style={{
+                            padding: "8px",
+                            borderRadius: "6px",
+                            background: "var(--bg-primary)",
+                            fontSize: "11px",
+                            color: "var(--text-secondary)",
+                            maxHeight: "120px",
+                            overflowY: "auto",
+                            whiteSpace: "pre-wrap",
+                          }}
+                        >
+                          {t.content.slice(0, 800)}
+                          {t.content.length > 800 ? "…" : ""}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}

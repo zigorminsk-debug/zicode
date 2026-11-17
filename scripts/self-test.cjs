@@ -41,7 +41,7 @@ for (const modelId of requiredFreeModels) {
 }
 console.log(`✓ Verified ${requiredFreeModels.length} core OpenCode Free AI models ($0 / apiKey='public')`)
 
-// 3. Verify all 17 OpenCode Tools
+// 3. Verify all 18 OpenCode Tools (including browser_tabs Chrome Extension bridge)
 const toolsSrc = checkFile("src/core/tools.ts").toString("utf-8")
 const requiredTools = [
   "read",
@@ -55,6 +55,7 @@ const requiredTools = [
   "todoread",
   "webfetch",
   "websearch",
+  "browser_tabs",
   "task",
   "question",
   "skill",
@@ -65,7 +66,16 @@ const requiredTools = [
 for (const t of requiredTools) {
   assert.ok(toolsSrc.includes(`name: "${t}"`), `Missing OpenCode tool schema: ${t}`)
 }
-console.log(`✓ Verified all ${requiredTools.length} OpenCode built-in tools`)
+console.log(`✓ Verified all ${requiredTools.length} OpenCode built-in tools (including browser_tabs)`)
+
+// 3b. Verify Chrome Extension files
+checkFile("chrome-extension/manifest.json")
+checkFile("chrome-extension/background.js")
+checkFile("chrome-extension/content.js")
+checkFile("chrome-extension/popup.html")
+checkFile("chrome-extension/popup.js")
+checkFile("public/ZiCode-Chrome-Extension-v2.3.0.zip")
+console.log("✓ Verified Manifest V3 Chrome Extension (chrome-extension/ & ZiCode-Chrome-Extension-v2.3.0.zip)")
 
 // 4. Verify Agents & Slash commands
 const agentsSrc = checkFile("src/core/agents.ts").toString("utf-8")

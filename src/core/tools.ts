@@ -2,6 +2,7 @@ import { checkPermission } from "./agents"
 import {
   AgentInfo,
   ArtifactItem,
+  BrowserTabItem,
   McpServerConfig,
   QuestionPrompt,
   SkillItem,
@@ -31,6 +32,7 @@ export interface ToolExecutionContext {
   setTodos: (todos: TodoItem[]) => void
   mcpServers: McpServerConfig[]
   skills?: SkillItem[]
+  browserTabs?: BrowserTabItem[]
   onQuestion?: (q: QuestionPrompt) => void
   onArtifact?: (a: ArtifactItem) => void
 }
@@ -305,6 +307,33 @@ export const OPENCODE_TOOL_SCHEMAS = [
           content: { type: "string" },
         },
         required: ["title", "type", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser_tabs",
+      description:
+        "Read the user's open Chrome browser tabs and page contents via the ZiCode Chrome Extension (list all open tabs, read active tab, read specific tab by ID/query, or search across open tabs).",
+      parameters: {
+        type: "object",
+        properties: {
+          action: {
+            type: "string",
+            enum: ["list", "read_active", "read_tab", "search"],
+            description: "Action to perform on open Chrome browser tabs",
+          },
+          query: {
+            type: "string",
+            description: "Optional tab title, URL substring, or search keyword",
+          },
+          tabId: {
+            type: "number",
+            description: "Optional tab ID to read",
+          },
+        },
+        required: ["action"],
       },
     },
   },
@@ -711,6 +740,76 @@ export async function executeToolCall(
       return {
         output: `Created interactive ${item.type.toUpperCase()} artifact "${item.title}" (${item.content.length} chars).`,
       }
+    }
+
+    case "browser_tabs": {
+      let tabs: BrowserTabItem[] = ctx.browserTabs ?? []
+      if (tabs.length === 0) {
+        try {
+          const res = await fetch("/api/browser/tabs")
+          if (res.ok) {
+            const data = await res.json()
+            if (Array.isArray(data?.tabs)) tabs = data.tabs
+          }
+        } catch {}
+      }
+
+      if (tabs.length === 0) {
+        return {
+          output:
+            "Вкладки Chrome пока не синхронизированы (0 вкладок). Установите расширение ZiCode Chrome Extension (кнопка «🌐 Браузер Chrome» вверху) и нажмите «Синхронизировать открытые вкладки».",
+        }
+      }
+
+      const action = String(args.action ?? "list")
+      if (action === "list") {
+        const listStr = tabs
+          .map(
+            (t, idx) =>
+              `${idx + 1}. [id=${t.id}] ${t.active ? "★ (Активная) " : ""}${t.title} — ${t.url} (${(t.content || "").length} симв.)`,
+          )
+          .join("\n")
+        return {
+          output: `Открытые вкладки в Google Chrome (${tabs.length}):\n${listStr}`,
+        }
+      }
+
+      if (action === "read_active") {
+        const active =
+          tabs.find((t) => t.active && !t.title.includes("ZiCode")) ||
+          tabs.find((t) => !t.title.includes("ZiCode") && (t.content || "").length > 0) ||
+          tabs.find((t) => t.active) ||
+          tabs[0]
+        if (!active) return { output: "Активная вкладка не найдена." }
+        return {
+          output:
+            `Активная вкладка Chrome:\nЗаголовок: ${active.title}\nURL: ${active.url}\n` +
+            (active.selection ? `Выделенный текст: ${active.selection}\n` : "") +
+            (active.headings?.length ? `Заголовки:\n${active.headings.join("\n")}\n\n` : "\n") +
+            `Текст страницы:\n${(active.content || "(нет текстового содержимого)").slice(0, 12000)}`,
+        }
+      }
+
+      if (action === "read_tab" || action === "search") {
+        const q = String(args.query ?? "").toLowerCase()
+        const tid = args.tabId ? Number(args.tabId) : undefined
+        const matched =
+          tabs.find((t) => tid !== undefined && t.id === tid) ||
+          tabs.find(
+            (t) =>
+              t.title.toLowerCase().includes(q) ||
+              t.url.toLowerCase().includes(q) ||
+              (t.content || "").toLowerCase().includes(q),
+          ) ||
+          tabs[0]
+        return {
+          output:
+            `Вкладка Chrome [${matched.id}]: ${matched.title}\nURL: ${matched.url}\n\n` +
+            `Содержимое:\n${(matched.content || "").slice(0, 12000)}`,
+        }
+      }
+
+      return { output: `Открыто вкладок Chrome: ${tabs.length}` }
     }
 
     default:
