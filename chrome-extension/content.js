@@ -82,4 +82,18 @@ window.addEventListener("message", (event) => {
       })
     } catch {}
   }
+  if (event.data?.type === "ZICODE_RUN_EXTENSION_ACTIONS" && Array.isArray(event.data?.actions)) {
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "EXECUTE_PENDING_ACTIONS",
+          actions: event.data.actions,
+          serverUrl: event.data.serverUrl,
+        },
+        () => {
+          void chrome.runtime.lastError
+        },
+      )
+    } catch {}
+  }
 })

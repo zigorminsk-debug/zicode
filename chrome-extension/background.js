@@ -60,9 +60,19 @@ function frameDeepExtractor() {
     const rawChunks = []
     let selection = ""
 
+    const isAdminConsole =
+      /administration|администрирован/i.test(document.title || "") ||
+      /\/admin\b/i.test(window.location.href || "")
+
     try {
       selection = window.getSelection ? norm(window.getSelection().toString()) : ""
     } catch {}
+
+    const seenRows = new Set()
+    const timeLineRx =
+      /^(\d{1,2}:\d{2}|\d{1,2}\s+(?:янв|фев|мар|апр|мая|май|июн|июл|авг|сен|окт|ноя|дек|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[а-яa-z.]*|\d{2}\.\d{2}\.\d{2,4}|вчера|сегодня|yesterday|today)$/i
+    const navNoiseRx =
+      /^(kerio connect|поиск|входящие|отправленные|черновики|спам|корзина|папки|new email|\+\s*new email|oldest|newest|1[-–]\d+\s+из\s+\d+|\d+)$/i
 
     for (const { doc } of docs) {
       try {
@@ -72,7 +82,56 @@ function frameDeepExtractor() {
           if (t && t.length > 1) headings.push(t)
         }
 
-        // Detect Email / Message List Rows (Kerio Connect ExtJS grids .x-grid3-row / .x-grid-row / .x-grid-item, Gmail/Yandex/Outlook/Roundcube rows)
+        // Strategy 1: Structured line-stream parser for Modern Kerio Connect Client (v9.3+/v10+) & Webmail message cards
+        if (!isAdminConsole && doc.body) {
+          const rawBodyLines = (doc.body.innerText || "")
+            .split(/\r?\n/)
+            .map((l) => norm(l))
+            .filter(Boolean)
+
+          const timeIndices = []
+          for (let i = 1; i < rawBodyLines.length; i++) {
+            if (timeLineRx.test(rawBodyLines[i])) {
+              timeIndices.push(i)
+            }
+          }
+
+          for (let k = 0; k < timeIndices.length; k++) {
+            const tIdx = timeIndices[k]
+            const timeStr = rawBodyLines[tIdx]
+            let sender = rawBodyLines[tIdx - 1] || ""
+            if (/^[A-ZА-ЯЁ0-9]{1,3}$/i.test(sender) && tIdx >= 2 && !navNoiseRx.test(rawBodyLines[tIdx - 2])) {
+              sender = rawBodyLines[tIdx - 2]
+            }
+            if (!sender || navNoiseRx.test(sender)) continue
+
+            let nextCardStart = rawBodyLines.length
+            if (k + 1 < timeIndices.length) {
+              const nextT = timeIndices[k + 1]
+              nextCardStart =
+                nextT >= 2 && /^[A-ZА-ЯЁ0-9]{1,3}$/i.test(rawBodyLines[nextT - 2]) ? nextT - 2 : nextT - 1
+            } else {
+              nextCardStart = Math.min(rawBodyLines.length, tIdx + 4)
+            }
+
+            const afterLines = rawBodyLines
+              .slice(tIdx + 1, nextCardStart)
+              .filter((l) => !navNoiseRx.test(l) && !/^[A-ZА-ЯЁ0-9]{1,2}$/i.test(l))
+
+            const subject = afterLines[0] || "(без темы)"
+            const snippet = afterLines.slice(1, 4).join(" ")
+            const formatted = `Отправитель: ${sender} | Время: ${timeStr} | Тема: ${subject}${
+              snippet ? ` | Краткое содержание: ${snippet}` : ""
+            }`
+            if (!seenRows.has(formatted)) {
+              seenRows.add(formatted)
+              emailRows.push(formatted)
+            }
+            if (emailRows.length >= 50) break
+          }
+        }
+
+        // Strategy 2: Detect Email / Message List Rows (Kerio Connect ExtJS grids .x-grid3-row / .x-grid-row / .x-grid-item, Gmail/Yandex/Outlook/Roundcube rows)
         const rowSelectors = [
           ".x-grid3-row",
           ".x-grid-row",
@@ -83,6 +142,8 @@ function frameDeepExtractor() {
           ".msg-list-item",
           ".messageRow",
           ".message-list-item",
+          "[class*='mail-item']",
+          "[class*='message-item']",
           "tr.zA",
           "[role='row']",
           "[role='listitem']",
@@ -91,17 +152,21 @@ function frameDeepExtractor() {
         ].join(", ")
 
         const candidateRows = Array.from(doc.querySelectorAll(rowSelectors))
-        const seenRows = new Set()
         for (const row of candidateRows) {
           const text = norm(row.innerText || row.textContent)
           if (!text || text.length < 6 || text.length > 600) continue
           if (seenRows.has(text)) continue
           seenRows.add(text)
 
+          if (isAdminConsole) {
+            tablesData.push(`[Учётная запись Kerio Admin]: ${text}`)
+            continue
+          }
+
           const isSelected =
             row.classList?.contains("x-grid3-row-selected") ||
             row.classList?.contains("x-grid-row-selected") ||
-            row.classList?.contains(" x-grid-item-selected") ||
+            row.classList?.contains("x-grid-item-selected") ||
             row.getAttribute("aria-selected") === "true"
 
           const isUnread =
@@ -113,7 +178,7 @@ function frameDeepExtractor() {
           emailRows.push(
             `${isSelected ? "[ВЫБРАНО] " : ""}${isUnread ? "[НОВОЕ] " : ""}${text}`,
           )
-          if (emailRows.length >= 40) break
+          if (emailRows.length >= 50) break
         }
 
         // Detect Opened Email Header & Body (Kerio Connect reading pane, Webmail message view, iframe message body)
@@ -378,7 +443,7 @@ function runDomActionInFrame(actionPayload) {
       const needle = lower(q)
       if (!needle) return null
       const rowSelectors =
-        ".x-grid3-row, .x-grid-row, .x-grid-item, .k-grid-row, .mail-MessageSnippet, .letter-list-item, .msg-list-item, .messageRow, tr.zA, [role='row'], [role='listitem'], tr"
+        ".x-grid3-row, .x-grid-row, .x-grid-item, .k-grid-row, .mail-MessageSnippet, .letter-list-item, .msg-list-item, .messageRow, [class*='mail-item'], [class*='message-item'], tr.zA, [role='row'], [role='listitem'], tr"
       for (const doc of docs) {
         const rows = Array.from(doc.querySelectorAll(rowSelectors))
         for (const r of rows) {
@@ -388,12 +453,26 @@ function runDomActionInFrame(actionPayload) {
           }
         }
       }
+      // Fallback for Modern Kerio Connect Client div/li cards
+      for (const doc of docs) {
+        const cards = Array.from(doc.querySelectorAll("div, li, article, a"))
+        let bestCard = null
+        let bestLen = 999999
+        for (const c of cards) {
+          const t = lower(c.innerText || c.textContent)
+          if (t && t.includes(needle) && t.length >= 12 && t.length <= 450 && t.length < bestLen) {
+            bestCard = c
+            bestLen = t.length
+          }
+        }
+        if (bestCard) return bestCard
+      }
       return null
     }
 
     const findButtonByPattern = (regex) => {
       const btnSelectors =
-        "button, [role='button'], a.x-btn, .x-btn, .x-btn-text, .x-menu-item, span.x-btn-inner, input[type='button'], input[type='submit'], a"
+        "button, [role='button'], a.x-btn, .x-btn, .x-btn-text, .x-menu-item, span.x-btn-inner, input[type='button'], input[type='submit'], a, div[tabindex], span"
       for (const doc of docs) {
         const els = Array.from(doc.querySelectorAll(btnSelectors))
         for (const el of els) {
@@ -447,10 +526,10 @@ function runDomActionInFrame(actionPayload) {
       }
       const isCompose = actionPayload.mode === "compose"
       const btnRegex = isCompose
-        ? /^(написать|создать|новое письмо|compose|new mail|new message|написать письмо)$/i
+        ? /^(\+?\s*new email|написать|создать|новое письмо|compose|new mail|new message|написать письмо)$/i
         : /^(ответить|reply|ответить всем|reply all)$/i
       const fallbackRegex = isCompose
-        ? /(написать|создать письмо|новое письмо|compose|new mail)/i
+        ? /(new email|написать|создать письмо|новое письмо|compose|new mail)/i
         : /(ответить|reply)/i
 
       const found = findButtonByPattern(btnRegex) || findButtonByPattern(fallbackRegex)
@@ -877,6 +956,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
     if (msg?.type === "GET_LAST_SYNC") {
       sendResponse(lastSyncPayload)
+      return false
+    }
+    if (msg?.type === "EXECUTE_PENDING_ACTIONS" && Array.isArray(msg.actions)) {
+      processPendingActions(msg.actions, msg.serverUrl || "http://127.0.0.1:4096")
+      sendResponse({ ok: true })
       return false
     }
   } catch {}

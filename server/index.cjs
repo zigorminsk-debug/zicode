@@ -169,7 +169,7 @@ function readBody(req) {
     let raw = ""
     req.on("data", (chunk) => {
       raw += chunk
-      if (raw.length > 10 * 1024 * 1024) {
+      if (raw.length > 35 * 1024 * 1024) {
         reject(new Error("Payload too large"))
       }
     })

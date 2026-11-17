@@ -853,7 +853,7 @@ export async function executeToolCall(
             (t, idx) =>
               `=== ВКЛАДКА #${idx + 1} [id=${t.id}]: ${t.title} (${t.url}) ===\n` +
               (t.headings?.length ? `Заголовки: ${t.headings.slice(0, 15).join(" | ")}\n` : "") +
-              `${(t.content || "").slice(0, 9000)}`,
+              `${enrichTabEmailContent(t).slice(0, 9000)}`,
           )
           .join("\n\n========================================\n\n")
         return {
@@ -867,10 +867,11 @@ export async function executeToolCall(
           tabs.find((t) => !t.title.includes("ZiCode") && (t.content || "").length > 0) ||
           tabs.find((t) => t.active) ||
           tabs[0]
-        // Also include any mail/CRM tabs (Kerio Connect, Mail, 1C, BelVEB) so email questions always have mail context
+        // Also include any mail/CRM tabs (Kerio Connect Client, Mail, 1C, BelVEB) so email questions always have mail context
         const mailOrWorkTabs = tabs.filter(
           (t) =>
             t.id !== active?.id &&
+            !isKerioAdminTab(t) &&
             /(kerio|mail|почт|письм|входящ|inbox|1c|1с|белвэб|dashboard|opel|автозапчаст|диск)/i.test(
               `${t.title} ${t.url}`,
             ) &&
@@ -881,7 +882,7 @@ export async function executeToolCall(
           `Активная вкладка Chrome:\nЗаголовок: ${active.title}\nURL: ${active.url}\n` +
           (active.selection ? `Выделенный текст: ${active.selection}\n` : "") +
           (active.headings?.length ? `Заголовки:\n${active.headings.join("\n")}\n\n` : "\n") +
-          `Текст страницы:\n${(active.content || "(нет текстового содержимого)").slice(0, 20000)}`
+          `Текст страницы:\n${enrichTabEmailContent(active).slice(0, 20000)}`
 
         if (mailOrWorkTabs.length > 0) {
           out +=
@@ -889,7 +890,7 @@ export async function executeToolCall(
             mailOrWorkTabs
               .map(
                 (t) =>
-                  `--- Вкладка [${t.id}]: ${t.title} (${t.url}) ---\n${(t.content || "").slice(0, 15000)}`,
+                  `--- Вкладка [${t.id}]: ${t.title} (${t.url}) ---\n${enrichTabEmailContent(t).slice(0, 15000)}`,
               )
               .join("\n\n")
         }
@@ -905,13 +906,14 @@ export async function executeToolCall(
             ? tabs.find((t) => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) ||
               tabs.find((t) => (t.content || "").toLowerCase().includes(q))
             : undefined) ||
+          tabs.find((t) => !isKerioAdminTab(t) && /(kerio|mail|почт|письм|inbox)/i.test(`${t.title} ${t.url}`)) ||
           tabs.find((t) => /(kerio|mail|почт|письм|inbox)/i.test(`${t.title} ${t.url}`)) ||
           tabs[0]
         return {
           output:
             `Вкладка Chrome [${matched.id}]: ${matched.title}\nURL: ${matched.url}\n` +
             (matched.headings?.length ? `Заголовки: ${matched.headings.join(" | ")}\n\n` : "\n") +
-            `Содержимое всех фреймов и писем:\n${(matched.content || "(текст вкладки пуст — обновите расширение ZiCode Chrome Bridge до v2.5.0 и нажмите Синхронизировать)").slice(0, 30000)}`,
+            `Содержимое всех фреймов и писем:\n${enrichTabEmailContent(matched).slice(0, 30000)}`,
         }
       }
 
@@ -949,3 +951,127 @@ function runVirtualWorkspaceShell(
     output: `[ZiCode Workspace Shell] $ ${command}\nExecuted against workspace (${Object.keys(ctx.files).length} files). Exit code: 0`,
   }
 }
+
+export function isKerioAdminTab(tab?: { title?: string; url?: string }): boolean {
+  if (!tab) return false
+  return (
+    /administration|администрирован/i.test(tab.title || "") ||
+    /\/admin\b/i.test(tab.url || "")
+  )
+}
+
+export interface ParsedInboxEmail {
+  index: number
+  sender: string
+  time: string
+  subject: string
+  snippet: string
+}
+
+export function parseStructuredEmailsFromRawText(rawText: string): ParsedInboxEmail[] {
+  if (!rawText) return []
+  const norm = (s: string) => String(s || "").replace(/[ \t]+/g, " ").trim()
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((l) => norm(l))
+    .filter(Boolean)
+
+  const timeOnlyRx =
+    /^(\d{1,2}:\d{2}|\d{1,2}\s+(?:янв|фев|мар|апр|мая|май|июн|июл|авг|сен|окт|ноя|дек|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[а-яa-z.]*|\d{2}\.\d{2}\.\d{2,4}|вчера|сегодня|yesterday|today)$/i
+  const senderWithTimeRx =
+    /^(?:[A-ZА-ЯЁ0-9]{1,3}\s+)?(.{2,65}?)\s+(\d{1,2}:\d{2}|\d{2}\.\d{2}\.\d{2,4})$/i
+  const navNoiseRx =
+    /^(kerio connect|поиск|поиск входящие|входящие|отправленные|черновики|спам|корзина|папки|new email|\+\s*new email|oldest|newest|1[-–]\d+\s+из\s+\d+|\d+|===.*===)$/i
+
+  const anchors: { lineIdx: number; sender: string; time: string; cardStartIdx: number }[] = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (navNoiseRx.test(line) || line.startsWith("Отправитель:")) continue
+
+    if (i >= 1 && timeOnlyRx.test(line)) {
+      let sender = lines[i - 1] || ""
+      let cardStartIdx = i - 1
+      if (/^[A-ZА-ЯЁ0-9]{1,3}$/i.test(sender) && i >= 2 && !navNoiseRx.test(lines[i - 2])) {
+        sender = lines[i - 2]
+        cardStartIdx = i - 2
+      } else if (i >= 2 && /^[A-ZА-ЯЁ0-9]{1,3}$/i.test(lines[i - 2])) {
+        cardStartIdx = i - 2
+      }
+      if (sender && !navNoiseRx.test(sender) && !sender.startsWith("===")) {
+        anchors.push({ lineIdx: i, sender, time: line, cardStartIdx })
+      }
+      continue
+    }
+
+    const mInline = line.match(senderWithTimeRx)
+    if (mInline && !navNoiseRx.test(mInline[1])) {
+      const sender = norm(mInline[1])
+      const time = mInline[2]
+      const cardStartIdx = i >= 1 && /^[A-ZА-ЯЁ0-9]{1,3}$/i.test(lines[i - 1]) ? i - 1 : i
+      anchors.push({ lineIdx: i, sender, time, cardStartIdx })
+    }
+  }
+
+  const parsed: ParsedInboxEmail[] = []
+  const seenKeys = new Set<string>()
+
+  for (let k = 0; k < anchors.length; k++) {
+    const cur = anchors[k]
+    const nextStart = k + 1 < anchors.length ? anchors[k + 1].cardStartIdx : Math.min(lines.length, cur.lineIdx + 4)
+    const bodyLines = lines
+      .slice(cur.lineIdx + 1, nextStart)
+      .filter((l) => !navNoiseRx.test(l) && !/^[A-ZА-ЯЁ0-9]{1,2}$/i.test(l) && !l.startsWith("==="))
+
+    const subject = bodyLines[0] || "(без темы)"
+    const snippet = bodyLines.slice(1, 4).join(" ")
+    const key = `${cur.sender}|${cur.time}|${subject}`
+    if (seenKeys.has(key)) continue
+    seenKeys.add(key)
+
+    parsed.push({
+      index: parsed.length + 1,
+      sender: cur.sender,
+      time: cur.time,
+      subject,
+      snippet,
+    })
+    if (parsed.length >= 50) break
+  }
+
+  return parsed
+}
+
+export function enrichTabEmailContent(tab?: BrowserTabItem): string {
+  if (!tab || !tab.content) {
+    return "(текст вкладки пуст — нажмите «🔄 Синхронизировать открытые вкладки сейчас» в расширении ZiCode Chrome Bridge)"
+  }
+
+  if (isKerioAdminTab(tab)) {
+    return (
+      `[⚠️ ВНИМАНИЕ ДЛЯ ИИ: Вкладка "${tab.title}" — это АДМИН-ПАНЕЛЬ СЕРВЕРА (Kerio Connect Administration: список учётных записей пользователей и дисковых квот в КБ/МБ), А НЕ ПОЧТОВЫЙ ЯЩИК С ВХОДЯЩИМИ ПИСЬМАМИ! Не выдавай учётные записи пользователей (Raidstat, Mira Florés, Samushevich Ignat и т.д.) за входящие письма! Входящие письма находятся во вкладке "Kerio Connect Client"!]\n\n` +
+      tab.content.replace(
+        /=== СПИСОК ПИСЕМ \/ СТРОК СООБЩЕНИЙ ВО ВКЛАДКЕ[^=]*===/g,
+        "=== ТАБЛИЦА УЧЁТНЫХ ЗАПИСЕЙ СЕРВЕРА (KERIO CONNECT ADMINISTRATION — ПОЛЬЗОВАТЕЛИ И ДИСКОВЫЕ КВОТЫ) ===",
+      )
+    )
+  }
+
+  const parsedEmails = parseStructuredEmailsFromRawText(tab.content)
+  if (parsedEmails.length > 0) {
+    const mdTable =
+      `=== 📬 РАСПОЗНАННЫЙ СПИСОК ВХОДЯЩИХ ПИСЕМ В KERIO CONNECT CLIENT / WEBMAIL (${parsedEmails.length} писем; №1..№5 сверху — это САМЫЕ НОВЫЕ / ПОСЛЕДНИЕ пришедшие письма!) ===\n` +
+      `| № | Отправитель | Время / Дата | Тема письма | Краткое содержание (превью) |\n` +
+      `|---|---|---|---|---|\n` +
+      parsedEmails
+        .map(
+          (e) =>
+            `| ${e.index} | ${e.sender} | ${e.time} | ${e.subject} | ${e.snippet || "—"} |`,
+        )
+        .join("\n")
+    return `${mdTable}\n\n${tab.content}`
+  }
+
+  return tab.content
+}
+

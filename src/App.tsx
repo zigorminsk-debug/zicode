@@ -46,6 +46,7 @@ import { executeToolCall } from "./core/tools"
 import {
   ArtifactItem,
   BrowserTabItem,
+  ChatAttachment,
   ChatMessage,
   McpServerConfig,
   ModelInfo,
@@ -247,6 +248,11 @@ export function App() {
 
   // Prompt composer state
   const [promptInput, setPromptInput] = useState("")
+  const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([])
+  const [isDraggingOverChat, setIsDraggingOverChat] = useState(false)
+  const [previewLightboxUrl, setPreviewLightboxUrl] = useState<string | null>(null)
+  const [attachmentToast, setAttachmentToast] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [streamingContent, setStreamingContent] = useState("")
   const [streamingReasoning, setStreamingReasoning] = useState("")
@@ -254,6 +260,158 @@ export function App() {
   const [activeArtifact, setActiveArtifact] = useState<ArtifactItem | null>(null)
 
   const chatEndRef = useRef<HTMLDivElement>(null)
+
+  const showToast = (msg: string) => {
+    setAttachmentToast(msg)
+    window.setTimeout(() => {
+      setAttachmentToast((cur) => (cur === msg ? null : cur))
+    }, 3800)
+  }
+
+  const processFilesIntoAttachments = async (rawFiles: File[], sourceLabel = "") => {
+    if (!rawFiles || rawFiles.length === 0) return
+    const added: ChatAttachment[] = []
+
+    for (const file of rawFiles) {
+      const isImg =
+        (file.type && file.type.startsWith("image/")) ||
+        /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(file.name || "")
+
+      if (isImg) {
+        const dataUrl = await new Promise<string>((resolve) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "")
+          reader.onerror = () => resolve("")
+          reader.readAsDataURL(file)
+        })
+        if (!dataUrl) continue
+
+        const dims = await new Promise<{ width?: number; height?: number }>((resolve) => {
+          const img = new Image()
+          img.onload = () => resolve({ width: img.naturalWidth || img.width, height: img.naturalHeight || img.height })
+          img.onerror = () => resolve({})
+          img.src = dataUrl
+        })
+
+        const ext = (file.type?.split("/")[1] || "png").replace(/[^a-z0-9]/gi, "")
+        const cleanName =
+          file.name && file.name !== "image.png" && file.name !== "blob"
+            ? file.name
+            : `Скриншот-${new Date().toLocaleTimeString("ru-RU").replace(/:/g, "-")}.${ext}`
+
+        added.push({
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: cleanName,
+          mimeType: file.type || "image/png",
+          size: file.size || Math.round((dataUrl.length * 3) / 4),
+          kind: "image",
+          dataUrl,
+          width: dims.width,
+          height: dims.height,
+        })
+      } else {
+        let textContent = ""
+        try {
+          textContent = await file.text()
+        } catch {}
+
+        const cleanName = file.name || `file-${Date.now()}.txt`
+        if (textContent && textContent.length < 300000 && !/\u0000/.test(textContent.slice(0, 1000))) {
+          setFiles((prev) => ({
+            ...prev,
+            [cleanName]: textContent,
+          }))
+        } else if (!textContent) {
+          textContent = `[Бинарный файл: ${cleanName}, тип: ${file.type || "application/octet-stream"}, размер: ${file.size} байт]`
+        }
+
+        added.push({
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          name: cleanName,
+          mimeType: file.type || "text/plain",
+          size: file.size || textContent.length,
+          kind: "file",
+          textContent: textContent.slice(0, 60000),
+        })
+      }
+    }
+
+    if (added.length > 0) {
+      setPendingAttachments((prev) => [...prev, ...added])
+      setCenterTab("chat")
+      const label = added
+        .map((a) => (a.kind === "image" ? `🖼️ ${a.name}${a.width ? ` (${a.width}×${a.height})` : ""}` : `📄 ${a.name}`))
+        .join(", ")
+      showToast(`Прикреплено ${sourceLabel ? `${sourceLabel}: ` : ""}${label}`)
+    }
+  }
+
+  const handleChatPaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items ? Array.from(e.clipboardData.items) : []
+    const filesFromItems: File[] = []
+    for (const item of items) {
+      if (item.kind === "file") {
+        const f = item.getAsFile()
+        if (f) filesFromItems.push(f)
+      }
+    }
+    const directFiles = e.clipboardData?.files ? Array.from(e.clipboardData.files) : []
+    const allFiles = filesFromItems.length > 0 ? filesFromItems : directFiles
+
+    if (allFiles.length > 0) {
+      const hasPlainText = Boolean(e.clipboardData?.getData("text/plain"))
+      if (!hasPlainText) {
+        e.preventDefault()
+      }
+      await processFilesIntoAttachments(allFiles, "копипастом из буфера")
+    }
+  }
+
+  const handleMousePasteFromClipboard = async () => {
+    try {
+      if (navigator.clipboard?.read) {
+        const clipItems = await navigator.clipboard.read()
+        const extractedFiles: File[] = []
+        for (const clipItem of clipItems) {
+          const imgType = clipItem.types.find((t) => t.startsWith("image/"))
+          if (imgType) {
+            const blob = await clipItem.getType(imgType)
+            const ext = imgType.split("/")[1] || "png"
+            extractedFiles.push(
+              new File([blob], `Скриншот-${new Date().toLocaleTimeString("ru-RU").replace(/:/g, "-")}.${ext}`, {
+                type: imgType,
+              }),
+            )
+          }
+        }
+        if (extractedFiles.length > 0) {
+          await processFilesIntoAttachments(extractedFiles, "мышкой из буфера обмена")
+          return
+        }
+      }
+      if (navigator.clipboard?.readText) {
+        const text = await navigator.clipboard.readText()
+        if (text && text.trim()) {
+          setPromptInput((prev) => (prev ? `${prev}\n${text}` : text))
+          showToast("📋 Текст из буфера обмена вставлен в поле чата")
+          return
+        }
+      }
+      showToast("💡 Скопируйте скриншот (Win+Shift+S / PrtSc / Копировать картинку) или нажмите ПКМ → «Вставить» в поле ввода")
+    } catch {
+      showToast("💡 Нажмите правой кнопкой мыши (ПКМ) по полю ввода чата и выберите «Вставить» (или Ctrl+V)")
+    }
+  }
+
+  const handleChatDrop = async (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDraggingOverChat(false)
+    const droppedFiles = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : []
+    if (droppedFiles.length > 0) {
+      await processFilesIntoAttachments(droppedFiles, "перетаскиванием мыши")
+    }
+  }
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeSessionId) ?? sessions[0],
@@ -325,12 +483,32 @@ export function App() {
 
   // Listen for Chrome Extension sync events (both direct window.postMessage and /api/browser/tabs server store)
   useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
+    const onMessage = async (event: MessageEvent) => {
       if (event.data?.type === "ZICODE_BROWSER_SYNC" && event.data?.payload) {
         const incoming = event.data.payload
         if (Array.isArray(incoming.tabs)) {
           setBrowserTabs(incoming.tabs)
           setBrowserLastSync(Date.now())
+          try {
+            const syncRes = await fetch("/api/browser/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(incoming),
+            })
+            if (syncRes.ok) {
+              const syncData = await syncRes.json()
+              if (Array.isArray(syncData?.pendingActions) && syncData.pendingActions.length > 0) {
+                window.postMessage(
+                  {
+                    type: "ZICODE_RUN_EXTENSION_ACTIONS",
+                    actions: syncData.pendingActions,
+                    serverUrl: window.location.origin,
+                  },
+                  "*",
+                )
+              }
+            }
+          } catch {}
         }
       }
     }
@@ -524,11 +702,21 @@ export function App() {
     setTerminalHistory((prev) => [...prev, { cmd, output: res.output, isError: res.isError }])
   }
 
-  // Submit Prompt / Slash Command / !shell / @file
+  // Submit Prompt / Slash Command / !shell / @file / Screenshots & Files
   const handleSubmitPrompt = async (overrideText?: string) => {
-    const raw = (overrideText ?? promptInput).trim()
-    if (!raw || isRunning) return
-    if (!overrideText) setPromptInput("")
+    const currentAttachments = overrideText ? [] : [...pendingAttachments]
+    let raw = (overrideText ?? promptInput).trim()
+    if ((!raw && currentAttachments.length === 0) || isRunning) return
+    if (!raw && currentAttachments.length > 0) {
+      const hasImages = currentAttachments.some((a) => a.kind === "image")
+      raw = hasImages
+        ? `Проанализируй прикреплённый скриншот (${currentAttachments.map((a) => a.name).join(", ")}) и подробно ответь.`
+        : `Проанализируй прикреплённый файл (${currentAttachments.map((a) => a.name).join(", ")}) и подробно ответь.`
+    }
+    if (!overrideText) {
+      setPromptInput("")
+      setPendingAttachments([])
+    }
 
     // 1. Direct shell execution via !command
     if (raw.startsWith("!")) {
@@ -659,6 +847,7 @@ export function App() {
       id: `u-${Date.now()}`,
       role: "user",
       content: raw,
+      attachments: currentAttachments.length > 0 ? currentAttachments : undefined,
       agentId: activeAgent.id,
       providerId: activeProvider.id,
       modelId: activeModel.id,
@@ -697,6 +886,7 @@ export function App() {
         provider: activeProvider,
         model: activeModel,
         userPrompt: effectivePrompt + attachedContext,
+        attachments: currentAttachments,
         apiKeys,
         customBaseUrls,
         toolCtx: {
@@ -1685,6 +1875,16 @@ export function App() {
              ================================================================= */}
           {centerTab === "chat" && (
             <div
+              onPaste={handleChatPaste}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                if (!isDraggingOverChat) setIsDraggingOverChat(true)
+              }}
+              onDragLeave={(e) => {
+                if (e.currentTarget === e.target) setIsDraggingOverChat(false)
+              }}
+              onDrop={handleChatDrop}
               style={{
                 flex: 1,
                 overflowY: "auto",
@@ -1692,9 +1892,32 @@ export function App() {
                 display: "flex",
                 flexDirection: "column",
                 gap: "14px",
+                position: "relative",
                 fontFamily: uiMode === "tui" ? "var(--font-mono)" : "var(--font-sans)",
               }}
             >
+              {isDraggingOverChat && (
+                <div
+                  style={{
+                    position: "sticky",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    padding: "18px",
+                    borderRadius: "12px",
+                    background: "rgba(56, 189, 248, 0.14)",
+                    border: "2px dashed var(--accent-secondary)",
+                    textAlign: "center",
+                    fontWeight: 700,
+                    fontSize: "13px",
+                    color: "var(--accent-secondary)",
+                    zIndex: 25,
+                  }}
+                >
+                  📥 Отпустите кнопку мыши, чтобы прикрепить скриншоты или файлы в чат
+                </div>
+              )}
+
               {/* Quick Action Starters */}
               <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
                 {[
@@ -1887,6 +2110,96 @@ export function App() {
                             )}
                           </details>
                         ))}
+                      </div>
+                    )}
+
+                    {/* Attached Screenshots & Files in Message */}
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div
+                        style={{
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: "10px",
+                          marginBottom: "10px",
+                        }}
+                      >
+                        {msg.attachments.map((att) =>
+                          att.kind === "image" && att.dataUrl ? (
+                            <div
+                              key={att.id}
+                              onClick={() => setPreviewLightboxUrl(att.dataUrl!)}
+                              title="Нажмите мышкой, чтобы увеличить скриншот"
+                              style={{
+                                borderRadius: "8px",
+                                overflow: "hidden",
+                                border: "1px solid var(--border-color)",
+                                background: "var(--bg-primary)",
+                                cursor: "zoom-in",
+                                maxWidth: "280px",
+                              }}
+                            >
+                              <img
+                                src={att.dataUrl}
+                                alt={att.name}
+                                style={{
+                                  display: "block",
+                                  maxWidth: "280px",
+                                  maxHeight: "180px",
+                                  objectFit: "contain",
+                                }}
+                              />
+                              <div
+                                className="mono"
+                                style={{
+                                  padding: "4px 8px",
+                                  fontSize: "10px",
+                                  color: "var(--text-secondary)",
+                                  borderTop: "1px solid var(--border-color)",
+                                }}
+                              >
+                                🖼️ {att.name}
+                                {att.width && att.height ? ` · ${att.width}×${att.height}` : ""} ·{" "}
+                                {Math.max(1, Math.round(att.size / 1024))} КБ
+                              </div>
+                            </div>
+                          ) : (
+                            <div
+                              key={att.id}
+                              onClick={() => {
+                                if (files[att.name] !== undefined) {
+                                  setActiveFilePath(att.name)
+                                  setCenterTab("editor")
+                                }
+                              }}
+                              title={
+                                files[att.name] !== undefined
+                                  ? "Нажмите мышкой, чтобы открыть файл в Редакторе"
+                                  : att.name
+                              }
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "8px",
+                                padding: "8px 12px",
+                                borderRadius: "8px",
+                                background: "var(--bg-primary)",
+                                border: "1px solid var(--border-color)",
+                                cursor: files[att.name] !== undefined ? "pointer" : "default",
+                                fontSize: "12px",
+                              }}
+                            >
+                              <FileCode size={15} color="var(--accent-secondary)" />
+                              <div>
+                                <div className="mono" style={{ fontWeight: 600 }}>
+                                  {att.name}
+                                </div>
+                                <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                                  {Math.max(1, Math.round(att.size / 1024))} КБ · {att.mimeType}
+                                </div>
+                              </div>
+                            </div>
+                          ),
+                        )}
                       </div>
                     )}
 
@@ -2514,9 +2827,15 @@ export function App() {
           )}
 
           {/* =================================================================
-              BOTTOM PROMPT COMPOSER (with /commands, @files, !shell)
+              BOTTOM PROMPT COMPOSER (with /commands, @files, !shell, Copy-Paste Screenshots & Files)
              ================================================================= */}
           <div
+            onPaste={handleChatPaste}
+            onDragOver={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+            onDrop={handleChatDrop}
             style={{
               padding: "10px 14px",
               background: "var(--bg-secondary)",
@@ -2524,6 +2843,154 @@ export function App() {
               position: "relative",
             }}
           >
+            {/* Hidden Native File & Screenshot Input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              accept="image/*,.txt,.md,.json,.csv,.ts,.tsx,.js,.jsx,.py,.html,.css,.xml,.yaml,.yml,.sql,.log,.ini,.pdf,.doc,.docx,.xls,.xlsx,*/*"
+              style={{ display: "none" }}
+              onChange={async (e) => {
+                const picked = e.target.files ? Array.from(e.target.files) : []
+                if (picked.length > 0) {
+                  await processFilesIntoAttachments(picked, "через выбор файла")
+                }
+                e.target.value = ""
+              }}
+            />
+
+            {/* Toast Notification for Copy-Paste / Drag & Drop */}
+            {attachmentToast && (
+              <div
+                style={{
+                  marginBottom: "8px",
+                  padding: "6px 12px",
+                  borderRadius: "6px",
+                  background: "rgba(56, 189, 248, 0.14)",
+                  border: "1px solid var(--accent-secondary)",
+                  fontSize: "11px",
+                  color: "var(--text-primary)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span>{attachmentToast}</span>
+                <button
+                  onClick={() => setAttachmentToast(null)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    color: "var(--text-muted)",
+                    fontSize: "12px",
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+
+            {/* Pending Screenshots & Files Preview Strip */}
+            {pendingAttachments.length > 0 && (
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  gap: "8px",
+                  marginBottom: "8px",
+                  padding: "8px",
+                  borderRadius: "8px",
+                  background: "var(--bg-primary)",
+                  border: "1px solid var(--border-color)",
+                  alignItems: "center",
+                }}
+              >
+                {pendingAttachments.map((att) => (
+                  <div
+                    key={att.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "8px",
+                      padding: "5px 8px",
+                      borderRadius: "7px",
+                      background: "var(--bg-tertiary)",
+                      border: "1px solid var(--border-color)",
+                      fontSize: "11px",
+                    }}
+                  >
+                    {att.kind === "image" && att.dataUrl ? (
+                      <img
+                        src={att.dataUrl}
+                        alt={att.name}
+                        onClick={() => setPreviewLightboxUrl(att.dataUrl!)}
+                        title="Нажмите мышкой для предпросмотра скриншота"
+                        style={{
+                          width: "44px",
+                          height: "34px",
+                          objectFit: "cover",
+                          borderRadius: "4px",
+                          border: "1px solid var(--border-color)",
+                          cursor: "zoom-in",
+                        }}
+                      />
+                    ) : (
+                      <FileCode size={18} color="var(--accent-secondary)" />
+                    )}
+                    <div style={{ maxWidth: "180px" }}>
+                      <div
+                        className="mono"
+                        style={{
+                          fontWeight: 600,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {att.name}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                        {att.kind === "image"
+                          ? `Скриншот${att.width ? ` ${att.width}×${att.height}` : ""} · ${Math.max(1, Math.round(att.size / 1024))} КБ`
+                          : `Файл · ${Math.max(1, Math.round(att.size / 1024))} КБ`}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setPendingAttachments((prev) => prev.filter((x) => x.id !== att.id))}
+                      title="Удалить вложение"
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        cursor: "pointer",
+                        color: "var(--danger)",
+                        padding: "2px 4px",
+                        fontWeight: 700,
+                        fontSize: "14px",
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  onClick={() => setPendingAttachments([])}
+                  style={{
+                    marginLeft: "auto",
+                    padding: "4px 8px",
+                    borderRadius: "5px",
+                    background: "transparent",
+                    border: "1px solid var(--border-color)",
+                    color: "var(--text-muted)",
+                    fontSize: "10px",
+                    cursor: "pointer",
+                  }}
+                >
+                  Очистить все ({pendingAttachments.length})
+                </button>
+              </div>
+            )}
+
             {/* Slash Command Autocomplete Popup */}
             {slashSuggestions.length > 0 && (
               <div
@@ -2598,17 +3065,64 @@ export function App() {
             )}
 
             <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
+              {/* Mouse Copy-Paste & File Attachment Buttons */}
+              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                <button
+                  type="button"
+                  onClick={handleMousePasteFromClipboard}
+                  title="Вставить скриншот или текст из буфера обмена мышкой (или нажмите Правой кнопкой мыши по полю ввода → Вставить / Ctrl+V)"
+                  style={{
+                    padding: "5px 9px",
+                    borderRadius: "6px",
+                    background: "var(--bg-tertiary)",
+                    border: "1px solid var(--border-color)",
+                    color: "var(--text-primary)",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <span>📋 Вставить скриншот</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Прикрепить скриншоты или любые файлы с компьютера мышкой (также работает перетаскивание мышкой Drag & Drop)"
+                  style={{
+                    padding: "5px 9px",
+                    borderRadius: "6px",
+                    background: "var(--bg-tertiary)",
+                    border: "1px solid var(--border-color)",
+                    color: "var(--text-secondary)",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "5px",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  <span>📎 Файл / Картинка</span>
+                </button>
+              </div>
+
               <textarea
                 rows={2}
                 value={promptInput}
                 onChange={(e) => setPromptInput(e.target.value)}
+                onPaste={handleChatPaste}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault()
                     handleSubmitPrompt()
                   }
                 }}
-                placeholder={`Спросите ${activeModel.name} (${activeAgent.name.toUpperCase()}) · '/' для команд · '@' для файлов · '!' для шелла · Tab для смены Build/Plan`}
+                placeholder={`Спросите ${activeModel.name} · Вставьте скриншот/файл мышкой (ПКМ → Вставить, кнопка «📋 Вставить скриншот» или перетащите файл мышкой)`}
                 style={{
                   flex: 1,
                   padding: "9px 12px",
@@ -2622,7 +3136,7 @@ export function App() {
               />
               <button
                 onClick={() => handleSubmitPrompt()}
-                disabled={isRunning || !promptInput.trim()}
+                disabled={isRunning || (!promptInput.trim() && pendingAttachments.length === 0)}
                 style={{
                   padding: "12px 16px",
                   borderRadius: "8px",
@@ -2642,6 +3156,41 @@ export function App() {
           </div>
         </main>
       </div>
+
+      {/* Fullscreen Screenshot Lightbox Modal */}
+      {previewLightboxUrl && (
+        <div
+          onClick={() => setPreviewLightboxUrl(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.85)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+            zIndex: 80,
+            cursor: "zoom-out",
+          }}
+        >
+          <img
+            src={previewLightboxUrl}
+            alt="Просмотр скриншота"
+            style={{
+              maxWidth: "92vw",
+              maxHeight: "84vh",
+              objectFit: "contain",
+              borderRadius: "10px",
+              border: "1px solid var(--border-color)",
+              boxShadow: "0 20px 50px rgba(0,0,0,0.6)",
+            }}
+          />
+          <div style={{ marginTop: "12px", fontSize: "12px", color: "#cbd5e1" }}>
+            Нажмите мышкой в любом месте, чтобы закрыть предпросмотр
+          </div>
+        </div>
+      )}
 
       {/* =====================================================================
           MODAL 1: FREE AI MODELS & PROVIDERS PICKER (/models)

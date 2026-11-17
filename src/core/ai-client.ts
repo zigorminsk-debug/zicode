@@ -1,13 +1,21 @@
 import {
   AgentInfo,
   ArtifactItem,
+  BrowserTabItem,
+  ChatAttachment,
   ModelInfo,
   ProviderInfo,
   QuestionPrompt,
   SessionInfo,
   ToolCallRecord,
 } from "./types"
-import { OPENCODE_TOOL_SCHEMAS, ToolExecutionContext, executeToolCall } from "./tools"
+import {
+  OPENCODE_TOOL_SCHEMAS,
+  ToolExecutionContext,
+  enrichTabEmailContent,
+  executeToolCall,
+  isKerioAdminTab,
+} from "./tools"
 
 export interface RunAgentTurnInput {
   session: SessionInfo
@@ -15,6 +23,7 @@ export interface RunAgentTurnInput {
   provider: ProviderInfo
   model: ModelInfo
   userPrompt: string
+  attachments?: ChatAttachment[]
   apiKeys: Record<string, string>
   customBaseUrls: Record<string, string>
   toolCtx: ToolExecutionContext
@@ -247,7 +256,18 @@ function mapToOpenCodeFreeModelId(modelId: string): string {
   return "big-pickle"
 }
 
-function sanitizeMessagesForRoute(apiMessages: any[], sendTools: boolean): any[] {
+function normalizeMessageContent(content: any, allowVision: boolean): any {
+  if (Array.isArray(content)) {
+    if (allowVision) return content
+    return content
+      .filter((part: any) => part && part.type === "text")
+      .map((part: any) => String(part.text || ""))
+      .join("\n")
+  }
+  return String(content || "")
+}
+
+function sanitizeMessagesForRoute(apiMessages: any[], sendTools: boolean, allowVision = true): any[] {
   if (sendTools) {
     return apiMessages.map((m) => {
       if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
@@ -276,7 +296,7 @@ function sanitizeMessagesForRoute(apiMessages: any[], sendTools: boolean): any[]
       }
       return {
         role: m.role,
-        content: String(m.content || ""),
+        content: normalizeMessageContent(m.content, allowVision),
       }
     })
   }
@@ -301,7 +321,7 @@ function sanitizeMessagesForRoute(apiMessages: any[], sendTools: boolean): any[]
     } else {
       flattened.push({
         role: m.role,
-        content: String(m.content || ""),
+        content: normalizeMessageContent(m.content, allowVision),
       })
     }
   }
@@ -331,6 +351,10 @@ async function tryFreeGatewayCompletion(
     (m) => m.role === "tool" || (Array.isArray(m.tool_calls) && m.tool_calls.length > 0),
   )
 
+  const hasVisionBlocks = apiMessages.some(
+    (m) => Array.isArray(m.content) && m.content.some((p: any) => p && p.type === "image_url"),
+  )
+
   const isPublicFree = !apiKey || apiKey === "public"
   const candidateRoutes: {
     url: string
@@ -338,6 +362,7 @@ async function tryFreeGatewayCompletion(
     modelName: string
     sendTools: boolean
     streamMode?: boolean
+    allowVision?: boolean
   }[] = []
 
   const primaryEndpoint =
@@ -347,6 +372,26 @@ async function tryFreeGatewayCompletion(
         ? `${baseURL}/responses`
         : `${baseURL}/chat/completions`
 
+  // If the user attached screenshots/images, prioritize Vision-capable routes first!
+  if (hasVisionBlocks && isPublicFree) {
+    candidateRoutes.push({
+      url: "https://opencode.ai/inference/openai/v1/chat/completions",
+      headers: openCodeFreeHeaders,
+      modelName: model.capabilities.vision ? model.id : "nemotron-3.5-super-vl-free",
+      sendTools: false,
+      streamMode: true,
+      allowVision: true,
+    })
+    candidateRoutes.push({
+      url: "https://text.pollinations.ai/openai",
+      headers: { "Content-Type": "application/json" },
+      modelName: "openai",
+      sendTools: false,
+      streamMode: false,
+      allowVision: true,
+    })
+  }
+
   // Only hit a third-party provider's paid endpoint directly if the user actually configured an API key for it (or if it is opencode)
   if (provider.id === "opencode" || (apiKey && apiKey !== "public")) {
     candidateRoutes.push({
@@ -355,6 +400,7 @@ async function tryFreeGatewayCompletion(
       modelName: model.id,
       sendTools: enableTools,
       streamMode: true,
+      allowVision: Boolean(model.capabilities.vision),
     })
 
     if (hasPreviousToolMessages) {
@@ -365,6 +411,7 @@ async function tryFreeGatewayCompletion(
         modelName: model.id,
         sendTools: false,
         streamMode: true,
+        allowVision: Boolean(model.capabilities.vision),
       })
     }
 
@@ -374,6 +421,7 @@ async function tryFreeGatewayCompletion(
       modelName: model.id,
       sendTools: enableTools,
       streamMode: false,
+      allowVision: Boolean(model.capabilities.vision),
     })
   }
 
@@ -388,6 +436,7 @@ async function tryFreeGatewayCompletion(
         modelName: mappedFreeModel,
         sendTools: enableTools,
         streamMode: true,
+        allowVision: false,
       })
       if (hasPreviousToolMessages) {
         candidateRoutes.push({
@@ -396,6 +445,7 @@ async function tryFreeGatewayCompletion(
           modelName: mappedFreeModel,
           sendTools: false,
           streamMode: true,
+          allowVision: false,
         })
       }
     }
@@ -406,6 +456,7 @@ async function tryFreeGatewayCompletion(
       modelName: mappedFreeModel,
       sendTools: false,
       streamMode: true,
+      allowVision: false,
     })
 
     candidateRoutes.push({
@@ -414,6 +465,7 @@ async function tryFreeGatewayCompletion(
       modelName: "openai",
       sendTools: enableTools && !hasPreviousToolMessages,
       streamMode: false,
+      allowVision: true,
     })
     candidateRoutes.push({
       url: "https://text.pollinations.ai/openai",
@@ -421,13 +473,14 @@ async function tryFreeGatewayCompletion(
       modelName: "openai",
       sendTools: false,
       streamMode: false,
+      allowVision: false,
     })
   }
 
   let lastError: unknown = null
   for (const route of candidateRoutes) {
     try {
-      const routeMessages = sanitizeMessagesForRoute(apiMessages, route.sendTools)
+      const routeMessages = sanitizeMessagesForRoute(apiMessages, route.sendTools, Boolean(route.allowVision))
       const payload: Record<string, any> =
         model.protocol === "messages" && route.url.endsWith("/messages")
           ? {
@@ -562,21 +615,40 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     recordList.durationMs = Date.now() - startedList
     preExecutedBrowserContext += `\n\n=== РЕЗУЛЬТАТ ИНСТРУМЕНТА browser_tabs({"action":"list"}) ===\n${resList.output}`
 
-    // Collect target tabs to read deeply (mail tabs like Kerio Connect + keyword-matched tabs + active tab)
+    // Collect target tabs to read deeply (prioritize Webmail Client tabs like Kerio Connect Client over Kerio Connect Administration!)
     const tabsToRead: BrowserTabItem[] = []
+    const isAskingAboutAdmin = /(admin|админ|квот|учетн|учётн)/i.test(userPrompt)
     if (isEmailOrChatQuery) {
+      // 1. First add Webmail Client tabs (Kerio Connect Client, Gmail, Yandex, Outlook, Roundcube — NOT Admin console)
       for (const t of freshBrowserTabs) {
-        if (/(kerio|mail|почт|письм|входящ|inbox|roundcube|outlook|gmail|yandex|telegram|whatsapp)/i.test(`${t.title} ${t.url}`)) {
+        if (
+          !isKerioAdminTab(t) &&
+          /(kerio|mail|почт|письм|входящ|inbox|roundcube|outlook|gmail|yandex|telegram|whatsapp)/i.test(
+            `${t.title} ${t.url}`,
+          )
+        ) {
           tabsToRead.push(t)
+        }
+      }
+      // 2. Only include Kerio Connect Administration if explicitly asked about admin/quotas or if no client tab exists
+      if (isAskingAboutAdmin || tabsToRead.length === 0) {
+        for (const t of freshBrowserTabs) {
+          if (
+            isKerioAdminTab(t) &&
+            !tabsToRead.some((x) => x.id === t.id)
+          ) {
+            tabsToRead.push(t)
+          }
         }
       }
     }
     for (const t of matchedTabsByWord) {
+      if (isEmailOrChatQuery && !isAskingAboutAdmin && isKerioAdminTab(t) && tabsToRead.length > 0) continue
       if (!tabsToRead.some((x) => x.id === t.id)) tabsToRead.push(t)
     }
     const activeNonZicode =
-      freshBrowserTabs.find((t) => t.active && !t.title.includes("ZiCode")) ||
-      freshBrowserTabs.find((t) => !t.title.includes("ZiCode") && (t.content || "").length > 0) ||
+      freshBrowserTabs.find((t) => t.active && !t.title.includes("ZiCode") && !(isEmailOrChatQuery && isKerioAdminTab(t))) ||
+      freshBrowserTabs.find((t) => !t.title.includes("ZiCode") && (t.content || "").length > 0 && !(isEmailOrChatQuery && isKerioAdminTab(t))) ||
       freshBrowserTabs[0]
     if (activeNonZicode && !tabsToRead.some((x) => x.id === activeNonZicode.id)) {
       tabsToRead.push(activeNonZicode)
@@ -640,9 +712,47 @@ Workspace files: [${workspaceSummary}]
 Current Agent: ${agent.name} (${agent.id})
 Active Model: ${model.name} (${provider.id}/${model.id})`
 
+  // Build context for any pasted/dropped files and screenshots
+  const attachments = input.attachments ?? []
+  const fileAttachments = attachments.filter((a) => a.kind === "file" && a.textContent)
+  const imageAttachments = attachments.filter((a) => a.kind === "image" && a.dataUrl)
+
+  let attachedFilesBlock = ""
+  if (fileAttachments.length > 0) {
+    attachedFilesBlock =
+      "\n\n=== ПРИКРЕПЛЁННЫЕ ПОЛЬЗОВАТЕЛЕМ ФАЙЛЫ В ЧАТЕ ===\n" +
+      fileAttachments
+        .map(
+          (f) =>
+            `<attached-file name="${f.name}" mime="${f.mimeType}" size="${f.size}">\n${(f.textContent || "").slice(0, 25000)}\n</attached-file>`,
+        )
+        .join("\n\n")
+  }
+
+  let attachedImagesNote = ""
+  if (imageAttachments.length > 0) {
+    attachedImagesNote =
+      `\n\n[К сообщению прикреплено скриншотов/изображений: ${imageAttachments.length} шт. (${imageAttachments
+        .map((img) => `${img.name}${img.width && img.height ? ` ${img.width}x${img.height}` : ""}`)
+        .join(", ")}). Внимательно проанализируй прикреплённые изображения и ответь на запрос пользователя.]`
+  }
+
+  const baseUserPrompt = `${userPrompt}${attachedFilesBlock}${attachedImagesNote}`
+
   const effectiveUserPrompt = preExecutedBrowserContext
-    ? `${userPrompt}\n\n[СИСТЕМНЫЕ ДАННЫЕ ZICODE CHROME BRIDGE v2.5 — ПРЯМОЙ ДОСТУП К ВКЛАДКАМ, ПОЧТЕ KERIO CONNECT И ФРЕЙМАМ АКТИВЕН! Ниже приведены реальные извлечённые списки писем, заголовки, таблицы и полный текст со всех фреймов открытых вкладок пользователя:]${preExecutedBrowserContext}\n\n[КРИТИЧЕСКАЯ ИНСТРУКЦИЯ: Ответь пользователю напрямую по этим данным! Никогда не проси пользователя копировать заголовки писем вручную — используй все строки писем, отправителей, темы и содержимое писем из блока выше! Если пользователь просит ответить отправителю или написать сообщение от его имени — сформируй готовый текст ответа от имени пользователя (обрамив его в блок \`\`\`email ... \`\`\` или вызвав browser_tabs с action="reply_email"), чтобы он сразу подставился в почтовый клиент!]`
-    : userPrompt
+    ? `${baseUserPrompt}\n\n[СИСТЕМНЫЕ ДАННЫЕ ZICODE CHROME BRIDGE v2.5 — ПРЯМОЙ ДОСТУП К ВКЛАДКАМ, ПОЧТЕ KERIO CONNECT CLIENT И ФРЕЙМАМ АКТИВЕН! Ниже приведены реальные извлечённые списки входящих писем, заголовки, таблицы и полный текст со всех фреймов открытых вкладок пользователя:]${preExecutedBrowserContext}\n\n[КРИТИЧЕСКАЯ ИНСТРУКЦИЯ: Ответь пользователю напрямую по этим данным! ВАЖНО: В списке писем Kerio Connect Client письма №1, №2, №3, №4, №5 СВЕРХУ списка — это САМЫЕ ПОСЛЕДНИЕ (НОВЫЕ) полученные письма (отсортированные по времени сверху вниз, например 13:15, 12:35, 12:25, 11:55, 11:50). Когда пользователь просит обзор «последних N писем», бери именно первые N писем СВЕРХУ (№1..№N) из вкладки «Kerio Connect Client»! НИКОГДА не путай вкладку почты «Kerio Connect Client» с админ-панелью «Kerio Connect Administration» (где перечислены учётные записи пользователей Raidstat, Mira Florés, Samushevich Ignat и их дисковые квоты в КБ/МБ)! Если пользователь просит ответить отправителю или написать сообщение от его имени — сформируй готовый текст ответа от имени пользователя (обрамив его в блок \`\`\`email ... \`\`\` или вызвав browser_tabs с action="reply_email"), чтобы он сразу подставился в почтовый клиент!]`
+    : baseUserPrompt
+
+  const userMessageContent: any =
+    imageAttachments.length > 0
+      ? [
+          { type: "text", text: effectiveUserPrompt },
+          ...imageAttachments.map((img) => ({
+            type: "image_url",
+            image_url: { url: img.dataUrl, detail: "high" },
+          })),
+        ]
+      : effectiveUserPrompt
 
   const apiMessages: any[] = [
     { role: "system", content: systemMessage },
@@ -653,7 +763,7 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
         role: m.role === "tool" ? "user" : m.role,
         content: m.content,
       })),
-    { role: "user", content: effectiveUserPrompt },
+    { role: "user", content: userMessageContent },
   ]
 
   // Try live OpenCode Zen / Provider API with multi-step tool loop (up to 4 iterations)
@@ -791,7 +901,7 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
         .filter((tc) => (tc.name === "write" || tc.name === "edit") && tc.args?.filePath)
         .map((tc) => ({
           path: String(tc.args.filePath),
-          content: String(tc.args.content || wrappedCtx.files[tc.args.filePath] || ""),
+          content: String(tc.args.content || wrappedCtx.files[String(tc.args.filePath)] || ""),
         }))
 
       if (writtenFiles.length > 0) {
@@ -882,17 +992,28 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
       })
     }
 
-    // Zero-Refusal Safeguard: if Chrome tabs ARE synced, never allow any model to claim it lacks browser or email access
+    // Zero-Refusal & Admin-Confusion Safeguard: if Chrome tabs ARE synced, never allow any model to claim it lacks browser/email access or confuse Kerio Admin accounts with Kerio Client emails
     const hasRefusalPhrase =
       /(не имею прямого доступа|не могу\s*[«"]?видеть|нет доступа к вашему браузеру|не вижу ваш браузер|не могу напрямую получить заголовки писем|скопируйте заголовки писем|пришлите их сюда|do not have direct access|cannot see your browser)/i.test(
         finalContent,
       )
 
-    if (freshBrowserTabs.length > 0 && (hasRefusalPhrase || (isBrowserQuery && !finalContent.trim()))) {
-      const mailTab = freshBrowserTabs.find((t) =>
+    const clientMailTab =
+      freshBrowserTabs.find(
+        (t) =>
+          !isKerioAdminTab(t) &&
+          /(kerio|mail|почт|письм|входящ|inbox|roundcube|outlook|gmail|yandex)/i.test(`${t.title} ${t.url}`),
+      ) ||
+      freshBrowserTabs.find((t) =>
         /(kerio|mail|почт|письм|входящ|inbox|roundcube|outlook|gmail|yandex)/i.test(`${t.title} ${t.url}`),
       )
-      const targetTab = (isEmailOrChatQuery && mailTab) || matchedTabsByWord[0] || freshBrowserTabs.find((t) => t.active) || freshBrowserTabs[0]
+
+    if (freshBrowserTabs.length > 0 && (hasRefusalPhrase || (isBrowserQuery && !finalContent.trim()))) {
+      const targetTab =
+        (isEmailOrChatQuery && clientMailTab) ||
+        matchedTabsByWord[0] ||
+        freshBrowserTabs.find((t) => t.active) ||
+        freshBrowserTabs[0]
       const tabsBulletList = freshBrowserTabs
         .map(
           (t, i) =>
@@ -905,7 +1026,7 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
       finalContent =
         `### 🌐 Данные из открытой вкладки «${targetTab?.title || "Браузер Chrome"}» (через ZiCode Chrome Bridge v2.5)\n\n` +
         (targetTab?.content
-          ? `#### 📬 Извлечённые письма, заголовки и содержимое всех фреймов вкладки:\n\`\`\`text\n${targetTab.content.slice(0, 8000)}\n\`\`\`\n\n`
+          ? `#### 📬 Извлечённые письма, заголовки и содержимое всех фреймов вкладки:\n${enrichTabEmailContent(targetTab).slice(0, 8000)}\n\n`
           : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.5.0** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
         `#### Список всех открытых вкладок (${freshBrowserTabs.length}):\n${tabsBulletList}\n\n` +
         `💡 Вы также можете написать: *«Ответь от моего имени отправителю [Имя]: [текст ответа]»* — и агент сам нажмёт «Ответить» во вкладке почты и введёт/отправит сообщение!`
@@ -1173,7 +1294,7 @@ async function runAutonomousLocalOpenCodeAgent(params: {
       .filter((tc) => (tc.name === "write" || tc.name === "edit") && tc.args?.filePath)
       .map((tc) => ({
         path: String(tc.args.filePath),
-        content: String(tc.args.content || toolCtx.files[tc.args.filePath] || ""),
+        content: String(tc.args.content || toolCtx.files[String(tc.args.filePath)] || ""),
       }))
 
     const content =

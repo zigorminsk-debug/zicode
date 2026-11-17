@@ -96,6 +96,18 @@ export interface ArtifactItem {
   createdAt: number
 }
 
+export interface ChatAttachment {
+  id: string
+  name: string
+  mimeType: string
+  size: number
+  kind: "image" | "file"
+  dataUrl?: string
+  textContent?: string
+  width?: number
+  height?: number
+}
+
 export interface ChatMessage {
   id: string
   role: "user" | "assistant" | "system" | "tool"
@@ -108,6 +120,7 @@ export interface ChatMessage {
   toolCalls?: ToolCallRecord[]
   question?: QuestionPrompt
   artifact?: ArtifactItem
+  attachments?: ChatAttachment[]
   tokensIn?: number
   tokensOut?: number
   costUsd?: number
@@ -165,6 +178,7 @@ export interface McpServerConfig {
   name: string
   transport: "http" | "sse" | "stdio"
   urlOrCommand: string
+  endpoint?: string
   enabled: boolean
   status: "connected" | "disconnected" | "error"
   tools: {
@@ -191,8 +205,11 @@ export interface BrowserTabItem {
   favIconUrl?: string
   selection?: string
   headings?: string[]
+  metaDescription?: string
   content?: string
 }
+
+export type ThemePalette = ThemeDefinition
 
 export interface ThemeDefinition {
   id: string
