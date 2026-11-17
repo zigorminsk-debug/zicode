@@ -116,6 +116,14 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
   const [notifPerms, setNotifPerms] = useState(true)
   const [notifErrors, setNotifErrors] = useState(true)
   const [soundAgent, setSoundAgent] = useState(true)
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth < 768 : false,
+  )
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
 
   const navGroups: {
     items: { id: SettingsTabId; label: string; icon: React.ReactNode }[]
@@ -147,6 +155,8 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
     },
   ]
 
+  const allNavItems = navGroups.flatMap((g) => g.items)
+
   const isModelVisible = (providerId: string, modelId: string) => {
     const key = `${providerId}:${modelId}`
     return enabledModels[key] !== false
@@ -161,166 +171,285 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
         background: "var(--bg-primary)",
         color: "var(--text-primary)",
         display: "flex",
+        flexDirection: isMobile ? "column" : "row",
         overflow: "hidden",
       }}
     >
-      {/* LEFT SIDEBAR: Exact replica of OpenCode Desktop Settings Navigation (image-5.png) */}
-      <aside
-        style={{
-          width: "260px",
-          borderRight: "1px solid var(--border-color)",
-          background: "var(--bg-secondary)",
-          display: "flex",
-          flexDirection: "column",
-          padding: "20px 14px",
-          flexShrink: 0,
-          overflowY: "auto",
-        }}
-      >
-        <button
-          onClick={onClose}
+      {/* MOBILE TOP NAVIGATION BAR (for Android / small screens) */}
+      {isMobile ? (
+        <div
           style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
+            background: "var(--bg-secondary)",
+            borderBottom: "1px solid var(--border-color)",
             padding: "8px 10px",
-            borderRadius: "8px",
-            background: "transparent",
-            color: "var(--text-secondary)",
-            fontSize: "13px",
-            fontWeight: 500,
-            marginBottom: "16px",
-            textAlign: "left",
-          }}
-        >
-          <ArrowLeft size={16} />
-          <span>Назад в приложение</span>
-        </button>
-
-        {/* Search input */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            padding: "7px 10px",
-            borderRadius: "8px",
-            background: "var(--bg-primary)",
-            border: "1px solid var(--border-color)",
-            marginBottom: "14px",
-          }}
-        >
-          <Search size={14} color="var(--text-muted)" />
-          <input
-            value={navSearch}
-            onChange={(e) => setNavSearch(e.target.value)}
-            placeholder="Поиск"
-            style={{
-              border: "none",
-              background: "transparent",
-              outline: "none",
-              width: "100%",
-              fontSize: "13px",
-              color: "var(--text-primary)",
-            }}
-          />
-        </div>
-
-        {/* Navigation Groups */}
-        <div style={{ display: "flex", flexDirection: "column", gap: "18px", flex: 1 }}>
-          {navGroups.map((group, gIdx) => {
-            const filteredItems = group.items.filter(
-              (it) => !navSearch.trim() || it.label.toLowerCase().includes(navSearch.toLowerCase()),
-            )
-            if (filteredItems.length === 0) return null
-            return (
-              <div key={gIdx} style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                {filteredItems.map((item) => {
-                  const active = activeTab === item.id
-                  return (
-                    <button
-                      key={item.id}
-                      onClick={() => setActiveTab(item.id)}
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "10px",
-                        padding: "9px 12px",
-                        borderRadius: "8px",
-                        background: active ? "var(--bg-elevated)" : "transparent",
-                        color: active ? "var(--text-primary)" : "var(--text-secondary)",
-                        fontWeight: active ? 600 : 400,
-                        fontSize: "13px",
-                        textAlign: "left",
-                        transition: "background 0.15s",
-                      }}
-                    >
-                      <span style={{ color: active ? "var(--accent)" : "var(--text-muted)", display: "flex" }}>
-                        {item.icon}
-                      </span>
-                      <span>{item.label}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            )
-          })}
-        </div>
-
-        {/* Quick Links to Help & GitHub Collaboration */}
-        <div
-          style={{
-            marginTop: "16px",
-            paddingTop: "12px",
-            borderTop: "1px solid var(--border-color)",
             display: "flex",
             flexDirection: "column",
-            gap: "6px",
+            gap: "8px",
+            flexShrink: 0,
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "6px" }}>
+            <button
+              onClick={onClose}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                padding: "6px 10px",
+                borderRadius: "8px",
+                background: "var(--bg-tertiary)",
+                border: "1px solid var(--border-color)",
+                color: "var(--text-primary)",
+                fontSize: "12px",
+                fontWeight: 600,
+              }}
+            >
+              <ArrowLeft size={15} />
+              <span>Назад</span>
+            </button>
+
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button
+                onClick={() => {
+                  onClose()
+                  onOpenGitHubTab()
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  padding: "6px 9px",
+                  borderRadius: "7px",
+                  background: "rgba(59, 130, 246, 0.14)",
+                  color: "#60a5fa",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                }}
+              >
+                <FolderGit2 size={13} /> GitHub
+              </button>
+              <button
+                onClick={() => {
+                  onClose()
+                  onOpenHelpTab()
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "5px",
+                  padding: "6px 9px",
+                  borderRadius: "7px",
+                  background: "rgba(34, 197, 94, 0.14)",
+                  color: "var(--success)",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                }}
+              >
+                <BookOpen size={13} /> Справка
+              </button>
+            </div>
+          </div>
+
+          {/* Horizontal Swipeable Category Tabs on Android */}
+          <div
+            style={{
+              display: "flex",
+              gap: "6px",
+              overflowX: "auto",
+              paddingBottom: "2px",
+              WebkitOverflowScrolling: "touch",
+            }}
+          >
+            {allNavItems.map((item) => {
+              const active = activeTab === item.id
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveTab(item.id)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "6px 10px",
+                    borderRadius: "8px",
+                    border: "1px solid",
+                    borderColor: active ? "var(--accent)" : "var(--border-color)",
+                    background: active ? "var(--bg-elevated)" : "var(--bg-tertiary)",
+                    color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                    fontWeight: active ? 700 : 500,
+                    fontSize: "12px",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
+                  }}
+                >
+                  <span style={{ color: active ? "var(--accent)" : "var(--text-muted)", display: "flex" }}>
+                    {item.icon}
+                  </span>
+                  <span>{item.label}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      ) : (
+        /* DESKTOP LEFT SIDEBAR: Exact replica of OpenCode Desktop Settings Navigation (image-5.png) */
+        <aside
+          style={{
+            width: "260px",
+            borderRight: "1px solid var(--border-color)",
+            background: "var(--bg-secondary)",
+            display: "flex",
+            flexDirection: "column",
+            padding: "20px 14px",
+            flexShrink: 0,
+            overflowY: "auto",
           }}
         >
           <button
-            onClick={() => {
-              onClose()
-              onOpenGitHubTab()
-            }}
+            onClick={onClose}
             style={{
               display: "flex",
               alignItems: "center",
               gap: "8px",
               padding: "8px 10px",
               borderRadius: "8px",
-              background: "rgba(59, 130, 246, 0.14)",
-              color: "#60a5fa",
-              fontSize: "12px",
-              fontWeight: 600,
+              background: "transparent",
+              color: "var(--text-secondary)",
+              fontSize: "13px",
+              fontWeight: 500,
+              marginBottom: "16px",
+              textAlign: "left",
             }}
           >
-            <FolderGit2 size={14} /> GitHub по API-ключу
+            <ArrowLeft size={16} />
+            <span>Назад в приложение</span>
           </button>
-          <button
-            onClick={() => {
-              onClose()
-              onOpenHelpTab()
-            }}
+
+          {/* Search input */}
+          <div
             style={{
               display: "flex",
               alignItems: "center",
               gap: "8px",
-              padding: "8px 10px",
+              padding: "7px 10px",
               borderRadius: "8px",
-              background: "rgba(34, 197, 94, 0.14)",
-              color: "var(--success)",
-              fontSize: "12px",
-              fontWeight: 600,
+              background: "var(--bg-primary)",
+              border: "1px solid var(--border-color)",
+              marginBottom: "14px",
             }}
           >
-            <BookOpen size={14} /> Полная справка и гайд
-          </button>
-        </div>
-      </aside>
+            <Search size={14} color="var(--text-muted)" />
+            <input
+              value={navSearch}
+              onChange={(e) => setNavSearch(e.target.value)}
+              placeholder="Поиск"
+              style={{
+                border: "none",
+                background: "transparent",
+                outline: "none",
+                width: "100%",
+                fontSize: "13px",
+                color: "var(--text-primary)",
+              }}
+            />
+          </div>
+
+          {/* Navigation Groups */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "18px", flex: 1 }}>
+            {navGroups.map((group, gIdx) => {
+              const filteredItems = group.items.filter(
+                (it) => !navSearch.trim() || it.label.toLowerCase().includes(navSearch.toLowerCase()),
+              )
+              if (filteredItems.length === 0) return null
+              return (
+                <div key={gIdx} style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  {filteredItems.map((item) => {
+                    const active = activeTab === item.id
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => setActiveTab(item.id)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "10px",
+                          padding: "9px 12px",
+                          borderRadius: "8px",
+                          background: active ? "var(--bg-elevated)" : "transparent",
+                          color: active ? "var(--text-primary)" : "var(--text-secondary)",
+                          fontWeight: active ? 600 : 400,
+                          fontSize: "13px",
+                          textAlign: "left",
+                          transition: "background 0.15s",
+                        }}
+                      >
+                        <span style={{ color: active ? "var(--accent)" : "var(--text-muted)", display: "flex" }}>
+                          {item.icon}
+                        </span>
+                        <span>{item.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Quick Links to Help & GitHub Collaboration */}
+          <div
+            style={{
+              marginTop: "16px",
+              paddingTop: "12px",
+              borderTop: "1px solid var(--border-color)",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+            }}
+          >
+            <button
+              onClick={() => {
+                onClose()
+                onOpenGitHubTab()
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "8px 10px",
+                borderRadius: "8px",
+                background: "rgba(59, 130, 246, 0.14)",
+                color: "#60a5fa",
+                fontSize: "12px",
+                fontWeight: 600,
+              }}
+            >
+              <FolderGit2 size={14} /> GitHub по API-ключу
+            </button>
+            <button
+              onClick={() => {
+                onClose()
+                onOpenHelpTab()
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "8px 10px",
+                borderRadius: "8px",
+                background: "rgba(34, 197, 94, 0.14)",
+                color: "var(--success)",
+                fontSize: "12px",
+                fontWeight: 600,
+              }}
+            >
+              <BookOpen size={14} /> Полная справка и гайд
+            </button>
+          </div>
+        </aside>
+      )}
 
       {/* RIGHT CONTENT AREA */}
-      <main style={{ flex: 1, overflowY: "auto", padding: "32px 44px" }}>
+      <main style={{ flex: 1, overflowY: "auto", padding: isMobile ? "14px 12px" : "32px 44px" }}>
         <div style={{ maxWidth: "780px", margin: "0 auto" }}>
           {/* =================================================================
               TAB: МОДЕЛИ (Exact replica of image-4.png!)

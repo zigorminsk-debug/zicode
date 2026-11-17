@@ -181,6 +181,14 @@ export function App() {
   const [uiMode, setUiMode] = useState<"studio" | "tui">("studio")
   const [sidebarTab, setSidebarTab] = useState<"sessions" | "files" | "todos" | "snapshots" | "mcp" | "builds">("files")
   const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false)
+  const [isMobile, setIsMobile] = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth < 768 : false,
+  )
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
   const [centerTab, setCenterTab] = useState<
     "chat" | "editor" | "diff" | "browser" | "github" | "help" | "architecture"
   >("chat")
@@ -1005,154 +1013,182 @@ export function App() {
       }}
     >
       {/* =====================================================================
-          TOP HEADER BAR (OpenCode Studio & TUI Header)
+          TOP HEADER BAR (OpenCode Studio & TUI Header — Compact 1-Row on Android)
          ===================================================================== */}
       <header
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "8px 14px",
+          padding: isMobile ? "6px 10px" : "8px 14px",
           background: "var(--bg-secondary)",
           borderBottom: "1px solid var(--border-color)",
-          gap: "10px",
-          flexWrap: "wrap",
+          gap: isMobile ? "6px" : "10px",
+          flexWrap: isMobile ? "nowrap" : "wrap",
           zIndex: 20,
         }}
       >
         {/* Left: Menu + Brand + Agent Switcher */}
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? "6px" : "10px", minWidth: 0 }}>
           <button
             onClick={() => setSidebarOpenMobile((v) => !v)}
-            title="Боковая панель"
+            title="Боковая панель (Файлы, Сессии, Сборки)"
             style={{
-              background: "var(--bg-tertiary)",
+              background: sidebarOpenMobile ? "var(--accent)" : "var(--bg-tertiary)",
+              color: sidebarOpenMobile ? "#0a0c10" : "var(--text-primary)",
               border: "1px solid var(--border-color)",
-              borderRadius: "6px",
-              padding: "6px 8px",
+              borderRadius: "7px",
+              padding: isMobile ? "7px 9px" : "6px 8px",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
+              flexShrink: 0,
             }}
           >
-            <Menu size={16} />
+            {sidebarOpenMobile && isMobile ? <X size={16} /> : <Menu size={16} />}
           </button>
 
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "7px", flexShrink: 0 }}>
             <div
               style={{
-                width: "28px",
-                height: "28px",
+                width: isMobile ? "26px" : "28px",
+                height: isMobile ? "26px" : "28px",
                 borderRadius: "7px",
                 background: "linear-gradient(135deg, var(--accent), var(--accent-secondary))",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 fontWeight: 800,
-                fontSize: "14px",
+                fontSize: isMobile ? "12px" : "14px",
                 color: "#0a0c10",
               }}
             >
               OC
             </div>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, fontSize: "14px" }}>
-                <span>ZiCode</span>
-                <span
-                  className="mono"
-                  style={{
-                    fontSize: "10px",
-                    padding: "1px 6px",
-                    borderRadius: "4px",
-                    background: "var(--bg-tertiary)",
-                    color: "var(--accent)",
-                    border: "1px solid var(--border-color)",
-                  }}
-                >
-                  OpenCode v2.3
-                </span>
+            {!isMobile && (
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: "6px", fontWeight: 700, fontSize: "14px" }}>
+                  <span>ZiCode</span>
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: "10px",
+                      padding: "1px 6px",
+                      borderRadius: "4px",
+                      background: "var(--bg-tertiary)",
+                      color: "var(--accent)",
+                      border: "1px solid var(--border-color)",
+                    }}
+                  >
+                    OpenCode v2.5
+                  </span>
+                </div>
+                <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>Android APK + Windows EXE</div>
               </div>
-              <div style={{ fontSize: "10px", color: "var(--text-muted)" }}>Android APK + Windows EXE</div>
-            </div>
+            )}
           </div>
 
-          {/* Agent Switcher (Tab) */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              background: "var(--bg-tertiary)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "7px",
-              padding: "2px",
-              gap: "2px",
-            }}
-          >
-            {BUILTIN_AGENTS.map((ag) => {
-              const active = ag.id === activeAgent.id
-              return (
-                <button
-                  key={ag.id}
-                  onClick={() => togglePrimaryAgent(ag.id)}
-                  title={`${ag.description} (Клавиша Tab)`}
-                  style={{
-                    padding: "4px 9px",
-                    borderRadius: "5px",
-                    border: "none",
-                    cursor: "pointer",
-                    fontSize: "11px",
-                    fontWeight: 700,
-                    background: active ? ag.color : "transparent",
-                    color: active ? "#0a0c10" : "var(--text-secondary)",
-                    transition: "all 0.15s",
-                  }}
-                >
-                  {ag.name.toUpperCase()}
-                </button>
-              )
-            })}
-          </div>
+          {/* Agent Switcher: Full pill bar on Desktop, 1-Tap compact badge on Android */}
+          {!isMobile && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                background: "var(--bg-tertiary)",
+                border: "1px solid var(--border-color)",
+                borderRadius: "7px",
+                padding: "2px",
+                gap: "2px",
+              }}
+            >
+              {BUILTIN_AGENTS.map((ag) => {
+                const active = ag.id === activeAgent.id
+                return (
+                  <button
+                    key={ag.id}
+                    onClick={() => togglePrimaryAgent(ag.id)}
+                    title={`${ag.description} (Клавиша Tab)`}
+                    style={{
+                      padding: "4px 9px",
+                      borderRadius: "5px",
+                      border: "none",
+                      cursor: "pointer",
+                      fontSize: "11px",
+                      fontWeight: 700,
+                      background: active ? ag.color : "transparent",
+                      color: active ? "#0a0c10" : "var(--text-secondary)",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    {ag.name.toUpperCase()}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         {/* Center: Active Free Model Selector Pill */}
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+            flex: isMobile ? 1 : undefined,
+            minWidth: 0,
+            justifyContent: isMobile ? "center" : "flex-start",
+          }}
+        >
           <button
             onClick={() => setShowModelModal(true)}
             style={{
               display: "flex",
               alignItems: "center",
-              gap: "8px",
-              padding: "6px 12px",
+              gap: isMobile ? "5px" : "8px",
+              padding: isMobile ? "6px 9px" : "6px 12px",
               borderRadius: "8px",
               background: "var(--bg-tertiary)",
               border: "1px solid var(--border-color)",
               cursor: "pointer",
-              fontSize: "12px",
+              fontSize: isMobile ? "11px" : "12px",
+              maxWidth: isMobile ? "100%" : undefined,
+              minWidth: 0,
             }}
           >
-            <Sparkles size={14} color="var(--accent)" />
-            <span style={{ fontWeight: 600 }}>{activeModel.name}</span>
+            <Sparkles size={13} color="var(--accent)" style={{ flexShrink: 0 }} />
+            <span
+              style={{
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                maxWidth: isMobile ? "115px" : "220px",
+              }}
+            >
+              {activeModel.name}
+            </span>
             {activeModel.free && (
               <span
                 className="mono"
                 style={{
-                  fontSize: "10px",
+                  fontSize: "9px",
                   fontWeight: 700,
-                  padding: "1px 6px",
+                  padding: "1px 5px",
                   borderRadius: "4px",
                   background: "rgba(34, 197, 94, 0.18)",
                   color: "var(--success)",
                   border: "1px solid rgba(34, 197, 94, 0.4)",
+                  flexShrink: 0,
                 }}
               >
-                FREE $0
+                {isMobile ? "$0" : "FREE $0"}
               </span>
             )}
-            <ChevronDown size={13} color="var(--text-muted)" />
+            <ChevronDown size={12} color="var(--text-muted)" style={{ flexShrink: 0 }} />
           </button>
 
-          {/* Reasoning Effort Selector */}
-          {activeModel.capabilities.reasoning && (
+          {/* Reasoning Effort Selector (Desktop header; on Android moved to Drawer) */}
+          {!isMobile && activeModel.capabilities.reasoning && (
             <select
               value={activeSession.reasoningEffort}
               onChange={(e) =>
@@ -1180,56 +1216,79 @@ export function App() {
           )}
         </div>
 
-        {/* Right: Undo/Redo, UI Mode (Studio/TUI), Theme, Builds */}
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-          <button
-            onClick={handleUndo}
-            disabled={activeSession.snapshots.length === 0}
-            title="Откатить шаг и файлы (/undo)"
-            style={{
-              padding: "6px 8px",
-              borderRadius: "6px",
-              background: "var(--bg-tertiary)",
-              border: "1px solid var(--border-color)",
-              cursor: activeSession.snapshots.length ? "pointer" : "not-allowed",
-              opacity: activeSession.snapshots.length ? 1 : 0.4,
-            }}
-          >
-            <RotateCcw size={14} />
-          </button>
-          <button
-            onClick={handleRedo}
-            disabled={activeSession.redoStack.length === 0}
-            title="Повторить шаг (/redo)"
-            style={{
-              padding: "6px 8px",
-              borderRadius: "6px",
-              background: "var(--bg-tertiary)",
-              border: "1px solid var(--border-color)",
-              cursor: activeSession.redoStack.length ? "pointer" : "not-allowed",
-              opacity: activeSession.redoStack.length ? 1 : 0.4,
-            }}
-          >
-            <RotateCw size={14} />
-          </button>
+        {/* Right: Actions (Compact on Android, Full on Desktop) */}
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? "5px" : "6px", flexShrink: 0 }}>
+          {isMobile && (
+            <button
+              onClick={() => togglePrimaryAgent()}
+              title="Нажмите для переключения режима BUILD ↔ PLAN"
+              style={{
+                padding: "5px 8px",
+                borderRadius: "6px",
+                border: "none",
+                cursor: "pointer",
+                fontSize: "10px",
+                fontWeight: 800,
+                background: activeAgent.color,
+                color: "#0a0c10",
+              }}
+            >
+              {activeAgent.name.toUpperCase()}
+            </button>
+          )}
 
-          <button
-            onClick={() => setUiMode((m) => (m === "studio" ? "tui" : "studio"))}
-            title="Переключить режим Studio GUI / Classic OpenCode TUI"
-            className="mono"
-            style={{
-              padding: "5px 9px",
-              borderRadius: "6px",
-              background: uiMode === "tui" ? "var(--accent)" : "var(--bg-tertiary)",
-              color: uiMode === "tui" ? "#0a0c10" : "var(--text-primary)",
-              border: "1px solid var(--border-color)",
-              cursor: "pointer",
-              fontSize: "11px",
-              fontWeight: 700,
-            }}
-          >
-            {uiMode === "tui" ? "TUI MODE" : "STUDIO GUI"}
-          </button>
+          {!isMobile && (
+            <>
+              <button
+                onClick={handleUndo}
+                disabled={activeSession.snapshots.length === 0}
+                title="Откатить шаг и файлы (/undo)"
+                style={{
+                  padding: "6px 8px",
+                  borderRadius: "6px",
+                  background: "var(--bg-tertiary)",
+                  border: "1px solid var(--border-color)",
+                  cursor: activeSession.snapshots.length ? "pointer" : "not-allowed",
+                  opacity: activeSession.snapshots.length ? 1 : 0.4,
+                }}
+              >
+                <RotateCcw size={14} />
+              </button>
+              <button
+                onClick={handleRedo}
+                disabled={activeSession.redoStack.length === 0}
+                title="Повторить шаг (/redo)"
+                style={{
+                  padding: "6px 8px",
+                  borderRadius: "6px",
+                  background: "var(--bg-tertiary)",
+                  border: "1px solid var(--border-color)",
+                  cursor: activeSession.redoStack.length ? "pointer" : "not-allowed",
+                  opacity: activeSession.redoStack.length ? 1 : 0.4,
+                }}
+              >
+                <RotateCw size={14} />
+              </button>
+
+              <button
+                onClick={() => setUiMode((m) => (m === "studio" ? "tui" : "studio"))}
+                title="Переключить режим Studio GUI / Classic OpenCode TUI"
+                className="mono"
+                style={{
+                  padding: "5px 9px",
+                  borderRadius: "6px",
+                  background: uiMode === "tui" ? "var(--accent)" : "var(--bg-tertiary)",
+                  color: uiMode === "tui" ? "#0a0c10" : "var(--text-primary)",
+                  border: "1px solid var(--border-color)",
+                  cursor: "pointer",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                }}
+              >
+                {uiMode === "tui" ? "TUI MODE" : "STUDIO GUI"}
+              </button>
+            </>
+          )}
 
           <button
             onClick={() => {
@@ -1238,7 +1297,7 @@ export function App() {
             }}
             title={`Тема: ${activeTheme.name} (/themes)`}
             style={{
-              padding: "6px 8px",
+              padding: isMobile ? "6px 7px" : "6px 8px",
               borderRadius: "6px",
               background: "var(--bg-tertiary)",
               border: "1px solid var(--border-color)",
@@ -1248,25 +1307,27 @@ export function App() {
             <Palette size={14} />
           </button>
 
-          <button
-            onClick={() => setCenterTab("help")}
-            title="Полная справка: как настроить программу, создать проект, подключить GitHub и Chrome"
-            style={{
-              padding: "6px 10px",
-              borderRadius: "6px",
-              background: centerTab === "help" ? "var(--accent)" : "var(--bg-tertiary)",
-              color: centerTab === "help" ? "#0a0c10" : "var(--text-primary)",
-              border: "1px solid var(--border-color)",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: "5px",
-              fontSize: "11px",
-              fontWeight: 700,
-            }}
-          >
-            <span>📖 Справка</span>
-          </button>
+          {!isMobile && (
+            <button
+              onClick={() => setCenterTab("help")}
+              title="Полная справка: как настроить программу, создать проект, подключить GitHub и Chrome"
+              style={{
+                padding: "6px 10px",
+                borderRadius: "6px",
+                background: centerTab === "help" ? "var(--accent)" : "var(--bg-tertiary)",
+                color: centerTab === "help" ? "#0a0c10" : "var(--text-primary)",
+                border: "1px solid var(--border-color)",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "5px",
+                fontSize: "11px",
+                fontWeight: 700,
+              }}
+            >
+              <span>📖 Справка</span>
+            </button>
+          )}
 
           <button
             onClick={() => {
@@ -1275,7 +1336,7 @@ export function App() {
             }}
             title="Полноэкранное меню настроек OpenCode (Провайдеры, Модели OpenCode Free, Расширения, Проекты)"
             style={{
-              padding: "6px 10px",
+              padding: isMobile ? "6px 9px" : "6px 10px",
               borderRadius: "6px",
               background: "var(--accent)",
               color: "#0a0c10",
@@ -1283,13 +1344,13 @@ export function App() {
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
-              gap: "5px",
+              gap: "4px",
               fontSize: "11px",
               fontWeight: 700,
             }}
           >
             <Settings size={14} />
-            <span>Меню / Модели</span>
+            <span>{isMobile ? "Меню" : "Меню / Модели"}</span>
           </button>
         </div>
       </header>
@@ -1298,22 +1359,96 @@ export function App() {
           MAIN BODY (Sidebar + Center Area)
          ===================================================================== */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden", position: "relative" }}>
+        {/* Mobile Backdrop Overlay when Sidebar Drawer is open */}
+        {isMobile && sidebarOpenMobile && (
+          <div
+            onClick={() => setSidebarOpenMobile(false)}
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0, 0, 0, 0.65)",
+              zIndex: 25,
+            }}
+          />
+        )}
+
         {/* LEFT SIDEBAR */}
         <aside
           style={{
-            width: "290px",
-            minWidth: "260px",
+            width: isMobile ? "84vw" : "290px",
+            maxWidth: isMobile ? "320px" : "290px",
+            minWidth: isMobile ? "240px" : "260px",
             background: "var(--bg-secondary)",
             borderRight: "1px solid var(--border-color)",
-            display: sidebarOpenMobile || window.innerWidth >= 900 ? "flex" : "none",
+            display: sidebarOpenMobile || !isMobile ? "flex" : "none",
             flexDirection: "column",
-            position: window.innerWidth < 900 ? "absolute" : "relative",
+            position: isMobile ? "fixed" : "relative",
             top: 0,
             bottom: 0,
             left: 0,
-            zIndex: 15,
+            zIndex: 30,
+            boxShadow: isMobile ? "4px 0 24px rgba(0,0,0,0.6)" : "none",
           }}
         >
+          {/* Mobile Drawer Top Bar with Quick Controls */}
+          {isMobile && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "10px 12px",
+                borderBottom: "1px solid var(--border-color)",
+                background: "var(--bg-tertiary)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontWeight: 700, fontSize: "13px" }}>ZiCode v2.5</span>
+                <button
+                  onClick={handleUndo}
+                  disabled={activeSession.snapshots.length === 0}
+                  style={{
+                    padding: "4px 7px",
+                    borderRadius: "5px",
+                    background: "var(--bg-primary)",
+                    border: "1px solid var(--border-color)",
+                    opacity: activeSession.snapshots.length ? 1 : 0.4,
+                  }}
+                >
+                  <RotateCcw size={13} />
+                </button>
+                <button
+                  onClick={handleRedo}
+                  disabled={activeSession.redoStack.length === 0}
+                  style={{
+                    padding: "4px 7px",
+                    borderRadius: "5px",
+                    background: "var(--bg-primary)",
+                    border: "1px solid var(--border-color)",
+                    opacity: activeSession.redoStack.length ? 1 : 0.4,
+                  }}
+                >
+                  <RotateCw size={13} />
+                </button>
+              </div>
+              <button
+                onClick={() => setSidebarOpenMobile(false)}
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: "6px",
+                  background: "var(--bg-primary)",
+                  border: "1px solid var(--border-color)",
+                  color: "var(--text-primary)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  fontSize: "11px",
+                }}
+              >
+                <X size={14} /> Закрыть
+              </button>
+            </div>
+          )}
           {/* Sidebar Navigation Icons */}
           <div
             style={{
@@ -1409,6 +1544,7 @@ export function App() {
                           onClick={() => {
                             setActiveFilePath(path)
                             setCenterTab("editor")
+                            if (isMobile) setSidebarOpenMobile(false)
                           }}
                           className="mono"
                           style={{
@@ -1803,28 +1939,66 @@ export function App() {
         </aside>
 
         {/* CENTER WORKSPACE */}
-        <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-          {/* Workspace Sub-Navigation Tabs */}
+        <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+          {/* Workspace Sub-Navigation Tabs — Single Horizontal Swipe Row on Android */}
           <div
             style={{
               display: "flex",
               alignItems: "center",
               justifyContent: "space-between",
-              padding: "6px 14px",
+              padding: isMobile ? "5px 8px" : "6px 14px",
               background: "var(--bg-secondary)",
               borderBottom: "1px solid var(--border-color)",
-              gap: "8px",
+              gap: "6px",
+              overflowX: "auto",
+              flexWrap: isMobile ? "nowrap" : "wrap",
+              WebkitOverflowScrolling: "touch",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: isMobile ? "5px" : "6px",
+                flexWrap: isMobile ? "nowrap" : "wrap",
+              }}
+            >
               {[
-                { id: "chat", label: "Диалог с агентом", icon: <Bot size={13} /> },
-                { id: "editor", label: `Редактор (${activeFilePath})`, icon: <Code2 size={13} /> },
-                { id: "diff", label: `Diff изменений (${sessionDiffs.length})`, icon: <GitBranch size={13} /> },
-                { id: "browser", label: `🌐 Браузер Chrome (${browserTabs.length})`, icon: <Search size={13} /> },
-                { id: "github", label: "🐙 GitHub API (Совместная работа)", icon: <FolderGit2 size={13} /> },
-                { id: "help", label: "📖 Справка и как создать проект", icon: <Sparkles size={13} /> },
-                { id: "architecture", label: "Анализ OpenCode & Ключ Android", icon: <ShieldCheck size={13} /> },
+                {
+                  id: "chat",
+                  label: isMobile ? "Чат" : "Диалог с агентом",
+                  icon: <Bot size={13} />,
+                },
+                {
+                  id: "editor",
+                  label: isMobile ? "Редактор" : `Редактор (${activeFilePath})`,
+                  icon: <Code2 size={13} />,
+                },
+                {
+                  id: "diff",
+                  label: isMobile ? `Diff (${sessionDiffs.length})` : `Diff изменений (${sessionDiffs.length})`,
+                  icon: <GitBranch size={13} />,
+                },
+                {
+                  id: "browser",
+                  label: isMobile ? `🌐 Chrome (${browserTabs.length})` : `🌐 Браузер Chrome (${browserTabs.length})`,
+                  icon: <Search size={13} />,
+                },
+                {
+                  id: "github",
+                  label: isMobile ? "🐙 GitHub" : "🐙 GitHub API (Совместная работа)",
+                  icon: <FolderGit2 size={13} />,
+                },
+                {
+                  id: "help",
+                  label: isMobile ? "📖 Справка" : "📖 Справка и как создать проект",
+                  icon: <Sparkles size={13} />,
+                },
+                {
+                  id: "architecture",
+                  label: isMobile ? "🔑 Ключ APK" : "Анализ OpenCode & Ключ Android",
+                  icon: <ShieldCheck size={13} />,
+                },
               ].map((t) => (
                 <button
                   key={t.id}
@@ -1833,14 +2007,17 @@ export function App() {
                     display: "flex",
                     alignItems: "center",
                     gap: "5px",
-                    padding: "5px 10px",
+                    padding: isMobile ? "5px 9px" : "5px 10px",
                     borderRadius: "6px",
                     border: "1px solid",
-                    borderColor: centerTab === t.id ? "var(--accent)" : "transparent",
-                    background: centerTab === t.id ? "var(--bg-elevated)" : "transparent",
+                    borderColor: centerTab === t.id ? "var(--accent)" : "var(--border-color)",
+                    background: centerTab === t.id ? "var(--bg-elevated)" : "var(--bg-tertiary)",
                     color: centerTab === t.id ? "var(--text-primary)" : "var(--text-secondary)",
-                    fontSize: "12px",
+                    fontSize: isMobile ? "11px" : "12px",
+                    fontWeight: centerTab === t.id ? 700 : 500,
                     cursor: "pointer",
+                    whiteSpace: "nowrap",
+                    flexShrink: 0,
                   }}
                 >
                   {t.icon}
@@ -1855,18 +2032,20 @@ export function App() {
               style={{
                 display: "flex",
                 alignItems: "center",
-                gap: "5px",
-                padding: "4px 9px",
+                gap: "4px",
+                padding: isMobile ? "5px 8px" : "4px 9px",
                 borderRadius: "6px",
                 background: showTerminal ? "var(--accent)" : "var(--bg-tertiary)",
                 color: showTerminal ? "#0a0c10" : "var(--text-secondary)",
                 border: "1px solid var(--border-color)",
                 fontSize: "11px",
                 cursor: "pointer",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
               }}
             >
               <Terminal size={13} />
-              <span>Терминал</span>
+              <span>{isMobile ? ">_" : "Терминал"}</span>
             </button>
           </div>
 
@@ -1888,10 +2067,10 @@ export function App() {
               style={{
                 flex: 1,
                 overflowY: "auto",
-                padding: "16px",
+                padding: isMobile ? "10px" : "16px",
                 display: "flex",
                 flexDirection: "column",
-                gap: "14px",
+                gap: isMobile ? "10px" : "14px",
                 position: "relative",
                 fontFamily: uiMode === "tui" ? "var(--font-mono)" : "var(--font-sans)",
               }}
@@ -1918,14 +2097,23 @@ export function App() {
                 </div>
               )}
 
-              {/* Quick Action Starters */}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+              {/* Quick Action Starters — Single swipeable row on Android */}
+              <div
+                style={{
+                  display: "flex",
+                  flexWrap: isMobile ? "nowrap" : "wrap",
+                  overflowX: isMobile ? "auto" : "visible",
+                  gap: "6px",
+                  paddingBottom: isMobile ? "2px" : 0,
+                  flexShrink: 0,
+                }}
+              >
                 {[
-                  { label: "🚀 /init (Создать AGENTS.md)", cmd: "/init" },
-                  { label: "🔍 /review (Ревью кода)", cmd: "/review" },
-                  { label: "⚡ Создай файл src/api/router.ts", cmd: "Создай файл src/api/router.ts с REST роутером" },
-                  { label: "🆓 Список бесплатных моделей ($0)", cmd: "/models" },
-                  { label: "📊 /status (Статус и токены)", cmd: "/status" },
+                  { label: "🚀 /init (AGENTS.md)", cmd: "/init" },
+                  { label: "🔍 /review (Ревью)", cmd: "/review" },
+                  { label: "⚡ Создай router.ts", cmd: "Создай файл src/api/router.ts с REST роутером" },
+                  { label: "🆓 Бесплатные модели ($0)", cmd: "/models" },
+                  { label: "📊 /status", cmd: "/status" },
                 ].map((chip) => (
                   <button
                     key={chip.label}
@@ -1938,6 +2126,8 @@ export function App() {
                       fontSize: "11px",
                       cursor: "pointer",
                       color: "var(--text-secondary)",
+                      whiteSpace: "nowrap",
+                      flexShrink: 0,
                     }}
                   >
                     {chip.label}
@@ -2162,6 +2352,8 @@ export function App() {
                         fontSize: "13px",
                         lineHeight: 1.6,
                         whiteSpace: "pre-wrap",
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
                       }}
                     >
                       {msg.content}
@@ -3010,68 +3202,83 @@ export function App() {
               </div>
             )}
 
-            <div style={{ display: "flex", gap: "8px", alignItems: "flex-end" }}>
-              {/* Mouse Copy-Paste & File Attachment Buttons */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+            <div style={{ display: "flex", gap: isMobile ? "6px" : "8px", alignItems: "flex-end" }}>
+              {/* Mouse Copy-Paste & File Attachment Buttons — Compact Icon Buttons on Android, Labeled Buttons on Desktop */}
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: isMobile ? "row" : "column",
+                  gap: "4px",
+                  flexShrink: 0,
+                }}
+              >
                 <button
                   type="button"
                   onClick={handleMousePasteFromClipboard}
-                  title="Вставить скриншот или текст из буфера обмена мышкой (или нажмите Правой кнопкой мыши по полю ввода → Вставить / Ctrl+V)"
+                  title="Вставить скриншот или текст из буфера обмена (или ПКМ → Вставить / Ctrl+V)"
                   style={{
-                    padding: "5px 9px",
-                    borderRadius: "6px",
+                    padding: isMobile ? "10px 10px" : "5px 9px",
+                    borderRadius: "8px",
                     background: "var(--bg-tertiary)",
                     border: "1px solid var(--border-color)",
                     color: "var(--text-primary)",
-                    fontSize: "11px",
+                    fontSize: isMobile ? "15px" : "11px",
                     fontWeight: 600,
                     cursor: "pointer",
                     display: "flex",
                     alignItems: "center",
+                    justifyContent: "center",
                     gap: "5px",
                     whiteSpace: "nowrap",
                   }}
                 >
-                  <span>📋 Вставить скриншот</span>
+                  <span>{isMobile ? "📋" : "📋 Вставить скриншот"}</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  title="Прикрепить скриншоты или любые файлы с компьютера мышкой (также работает перетаскивание мышкой Drag & Drop)"
+                  title="Прикрепить скриншоты, фото или любые файлы"
                   style={{
-                    padding: "5px 9px",
-                    borderRadius: "6px",
+                    padding: isMobile ? "10px 10px" : "5px 9px",
+                    borderRadius: "8px",
                     background: "var(--bg-tertiary)",
                     border: "1px solid var(--border-color)",
                     color: "var(--text-secondary)",
-                    fontSize: "11px",
+                    fontSize: isMobile ? "15px" : "11px",
                     fontWeight: 600,
                     cursor: "pointer",
                     display: "flex",
                     alignItems: "center",
+                    justifyContent: "center",
                     gap: "5px",
                     whiteSpace: "nowrap",
                   }}
                 >
-                  <span>📎 Файл / Картинка</span>
+                  <span>{isMobile ? "📎" : "📎 Файл / Картинка"}</span>
                 </button>
               </div>
 
               <textarea
-                rows={2}
+                rows={isMobile ? 1 : 2}
                 value={promptInput}
                 onChange={(e) => setPromptInput(e.target.value)}
                 onPaste={handleChatPaste}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (e.key === "Enter" && !e.shiftKey && !isMobile) {
                     e.preventDefault()
                     handleSubmitPrompt()
                   }
                 }}
-                placeholder={`Спросите ${activeModel.name} · Вставьте скриншот/файл мышкой (ПКМ → Вставить, кнопка «📋 Вставить скриншот» или перетащите файл мышкой)`}
+                placeholder={
+                  isMobile
+                    ? `Сообщение для ${activeModel.name}...`
+                    : `Спросите ${activeModel.name} · Вставьте скриншот/файл мышкой (ПКМ → Вставить, кнопка «📋 Вставить скриншот» или перетащите файл мышкой)`
+                }
                 style={{
                   flex: 1,
-                  padding: "9px 12px",
+                  minWidth: 0,
+                  minHeight: isMobile ? "42px" : undefined,
+                  padding: isMobile ? "10px 11px" : "9px 12px",
                   borderRadius: "8px",
                   background: "var(--bg-primary)",
                   border: "1px solid var(--border-color)",
@@ -3084,7 +3291,7 @@ export function App() {
                 onClick={() => handleSubmitPrompt()}
                 disabled={isRunning || (!promptInput.trim() && pendingAttachments.length === 0)}
                 style={{
-                  padding: "12px 16px",
+                  padding: isMobile ? "11px 13px" : "12px 16px",
                   borderRadius: "8px",
                   background: "var(--accent)",
                   color: "#0a0c10",
@@ -3093,7 +3300,9 @@ export function App() {
                   cursor: isRunning ? "not-allowed" : "pointer",
                   display: "flex",
                   alignItems: "center",
+                  justifyContent: "center",
                   gap: "6px",
+                  flexShrink: 0,
                 }}
               >
                 <Send size={15} />
