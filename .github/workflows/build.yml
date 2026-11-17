@@ -1,0 +1,111 @@
+name: Build ZiCode (Android Signed APK & Windows EXE)
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-android:
+    name: Build & Sign Android Release APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies & build OpenCode web bundle
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+        run: |
+          npm install
+          npm run build
+          npm test
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Prepare Persistent Android Signing Key (GitHub Secrets)
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "Loaded persistent keystore from GitHub Secret ANDROID_KEYSTORE_BASE64"
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/zicode-release.p12"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/zicode-release.p12" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=${ANDROID_KEYSTORE_PASSWORD:-zicode2026release}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=${ANDROID_KEY_ALIAS:-zicode-key}" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=${ANDROID_KEY_PASSWORD:-zicode2026release}" >> "$GITHUB_ENV"
+          else
+            echo "Using persistent project keystore android/keystores/zicode-release.p12"
+            echo "ANDROID_KEYSTORE_PATH=$(pwd)/android/keystores/zicode-release.p12" >> "$GITHUB_ENV"
+            echo "ANDROID_KEYSTORE_PASSWORD=zicode2026release" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_ALIAS=zicode-key" >> "$GITHUB_ENV"
+            echo "ANDROID_KEY_PASSWORD=zicode2026release" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Signed Release APK with Gradle
+        run: |
+          gradle -p android assembleRelease --no-daemon
+          cp android/app/build/outputs/apk/release/app-release.apk ZiCode-Android-v2.3.0-Signed-Release.apk
+          keytool -printcert -jarfile ZiCode-Android-v2.3.0-Signed-Release.apk | head -n 25
+
+      - name: Upload Signed Android APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZiCode-Android-Signed-APK
+          path: ZiCode-Android-v2.3.0-Signed-Release.apk
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows Desktop (.exe Installer & Portable)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build OpenCode bundle & Package Windows EXE
+        run: |
+          npm run build
+          npx electron-builder --win --x64 --publish never
+
+      - name: Upload Windows EXE Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZiCode-Windows-x64
+          path: |
+            release-builds/*.exe
+            release-builds/*.zip
+          if-no-files-found: error

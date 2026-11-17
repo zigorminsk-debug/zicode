@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'ai.zicode.opencode'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "ai.zicode.opencode"
+        minSdk 24
+        targetSdk 34
+        versionCode 230
+        versionName "2.3.0"
+    }
+
+    signingConfigs {
+        release {
+            def envKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            storeFile envKeystorePath ? file(envKeystorePath) : file("../keystores/zicode-release.p12")
+            storePassword System.getenv("ANDROID_KEYSTORE_PASSWORD") ?: "zicode2026release"
+            keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: "zicode-key"
+            keyPassword System.getenv("ANDROID_KEY_PASSWORD") ?: "zicode2026release"
+            enableV1Signing true
+            enableV2Signing true
+            enableV3Signing true
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            shrinkResources false
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+}
