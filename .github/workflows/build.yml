@@ -14,7 +14,7 @@ permissions:
 jobs:
   build-android:
     name: Build & Sign Android Release APK
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,14 +37,6 @@ jobs:
         with:
           distribution: "temurin"
           java-version: "17"
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Setup Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
 
       - name: Prepare Persistent Android Signing Key (GitHub Secrets)
         env:
@@ -70,9 +62,23 @@ jobs:
 
       - name: Build Signed Release APK with Gradle
         run: |
-          gradle -p android assembleRelease --no-daemon
+          set +e
+          if ! command -v gradle >/dev/null 2>&1; then
+            curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /tmp
+            export PATH="/tmp/gradle-8.7/bin:$PATH"
+          fi
+          gradle -p android assembleRelease --no-daemon > /tmp/android-build.log 2>&1
+          CODE=$?
+          cat /tmp/android-build.log
+          if [ $CODE -ne 0 ]; then
+            MSG=$(tail -n 20 /tmp/android-build.log | tr '\n' ' ')
+            echo "::error title=Android Build Failed::$MSG"
+            exit $CODE
+          fi
           cp android/app/build/outputs/apk/release/app-release.apk ZiCode-Android-v2.3.0-Signed-Release.apk
-          keytool -printcert -jarfile ZiCode-Android-v2.3.0-Signed-Release.apk | head -n 25
+          CERT_INFO=$(keytool -printcert -jarfile ZiCode-Android-v2.3.0-Signed-Release.apk | grep -E "Owner:|SHA256:" | tr '\n' ' ')
+          echo "::notice title=Android APK Signed Successfully::$CERT_INFO"
 
       - name: Upload Signed Android APK Artifact
         uses: actions/upload-artifact@v4
@@ -93,13 +99,30 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install dependencies
-        run: npm install
-
-      - name: Build OpenCode bundle & Package Windows EXE
+      - name: Install dependencies & Package Windows EXE
+        shell: bash
         run: |
-          npm run build
-          npx electron-builder --win --x64 --publish never
+          set +e
+          rm -f package-lock.json
+          npm install > /tmp/win-install.log 2>&1
+          ICODE=$?
+          if [ $ICODE -ne 0 ]; then
+            cat /tmp/win-install.log
+            MSG=$(tail -n 15 /tmp/win-install.log | tr '\n' ' ')
+            echo "::error title=Windows npm install failed::$MSG"
+            exit $ICODE
+          fi
+          npm run build > /tmp/win-build.log 2>&1
+          npx electron-builder --win nsis portable zip --x64 --publish never >> /tmp/win-build.log 2>&1
+          BCODE=$?
+          cat /tmp/win-build.log
+          if [ $BCODE -ne 0 ]; then
+            MSG=$(tail -n 20 /tmp/win-build.log | tr '\n' ' ')
+            echo "::error title=Windows electron-builder failed::$MSG"
+            exit $BCODE
+          fi
+          BUILT_FILES=$(ls -1 release-builds/ | tr '\n' ' ')
+          echo "::notice title=Windows Builds Ready::$BUILT_FILES"
 
       - name: Upload Windows EXE Artifacts
         uses: actions/upload-artifact@v4
