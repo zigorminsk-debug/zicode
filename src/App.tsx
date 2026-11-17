@@ -2014,102 +2014,55 @@ export function App() {
                       </div>
                     </div>
 
-                    {/* Reasoning Trace */}
-                    {msg.reasoning && (
-                      <details
-                        style={{
-                          marginBottom: "10px",
-                          padding: "8px 10px",
-                          borderRadius: "6px",
-                          background: "var(--bg-primary)",
-                          border: "1px solid var(--border-color)",
-                          fontSize: "11px",
-                          color: "var(--text-secondary)",
-                        }}
-                      >
-                        <summary style={{ cursor: "pointer", fontWeight: 600, color: "var(--text-muted)" }}>
-                          🧠 Мыслительный процесс модели (Reasoning Trace)
-                        </summary>
-                        <div className="mono" style={{ marginTop: "6px", whiteSpace: "pre-wrap" }}>
-                          {msg.reasoning}
-                        </div>
-                      </details>
-                    )}
-
-                    {/* Tool Calls */}
-                    {msg.toolCalls && msg.toolCalls.length > 0 && (
+                    {/* Tool Calls — ONLY shown if an error occurred */}
+                    {msg.toolCalls && msg.toolCalls.some((tc) => tc.status === "error") && (
                       <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginBottom: "10px" }}>
-                        {msg.toolCalls.map((tc) => (
-                          <details
-                            key={tc.id}
-                            style={{
-                              padding: "8px 10px",
-                              borderRadius: "6px",
-                              background: "var(--bg-primary)",
-                              border: "1px solid var(--border-color)",
-                              fontSize: "11px",
-                            }}
-                          >
-                            <summary
-                              className="mono"
+                        {msg.toolCalls
+                          .filter((tc) => tc.status === "error")
+                          .map((tc) => (
+                            <details
+                              key={tc.id}
                               style={{
-                                cursor: "pointer",
-                                display: "flex",
-                                alignItems: "center",
-                                justifyContent: "space-between",
+                                padding: "8px 10px",
+                                borderRadius: "6px",
+                                background: "var(--bg-primary)",
+                                border: "1px solid var(--danger)",
+                                fontSize: "11px",
                               }}
                             >
-                              <span>
-                                🔧 <strong>{tc.name}</strong>(
-                                {tc.args?.filePath
-                                  ? `"${tc.args.filePath}"${tc.args.content ? `, ${String(tc.args.content).length} симв.` : ""}`
-                                  : JSON.stringify(tc.args).length > 85
-                                    ? `${JSON.stringify(tc.args).slice(0, 85)}…`
-                                    : JSON.stringify(tc.args)}
-                                )
-                              </span>
-                              <span
-                                style={{
-                                  color: tc.status === "error" ? "var(--danger)" : "var(--success)",
-                                }}
-                              >
-                                {tc.status.toUpperCase()} {tc.durationMs !== undefined ? `(${tc.durationMs}ms)` : ""}
-                              </span>
-                            </summary>
-                            {tc.output && (
-                              <pre
+                              <summary
                                 className="mono"
                                 style={{
-                                  marginTop: "6px",
-                                  padding: "8px",
-                                  background: "var(--bg-secondary)",
-                                  borderRadius: "5px",
-                                  overflowX: "auto",
-                                  fontSize: "11px",
-                                  whiteSpace: "pre-wrap",
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "space-between",
+                                  color: "var(--danger)",
                                 }}
                               >
-                                {tc.output}
-                              </pre>
-                            )}
-                            {tc.diff && (
-                              <pre
-                                className="mono"
-                                style={{
-                                  marginTop: "6px",
-                                  padding: "8px",
-                                  background: "#090d14",
-                                  borderRadius: "5px",
-                                  overflowX: "auto",
-                                  fontSize: "11px",
-                                  color: "#cbd5e1",
-                                }}
-                              >
-                                {tc.diff}
-                              </pre>
-                            )}
-                          </details>
-                        ))}
+                                <span>
+                                  ⚠️ Ошибка инструмента <strong>{tc.name}</strong>
+                                </span>
+                                <span>ERROR</span>
+                              </summary>
+                              {tc.output && (
+                                <pre
+                                  className="mono"
+                                  style={{
+                                    marginTop: "6px",
+                                    padding: "8px",
+                                    background: "var(--bg-secondary)",
+                                    borderRadius: "5px",
+                                    overflowX: "auto",
+                                    fontSize: "11px",
+                                    whiteSpace: "pre-wrap",
+                                  }}
+                                >
+                                  {tc.output}
+                                </pre>
+                              )}
+                            </details>
+                          ))}
                       </div>
                     )}
 
@@ -2252,7 +2205,7 @@ export function App() {
                 )
               })}
 
-              {/* Streaming Turn Indicator */}
+              {/* Streaming Turn Indicator — clean without service logs unless an error occurs */}
               {isRunning && (
                 <div
                   style={{
@@ -2262,40 +2215,33 @@ export function App() {
                     border: "1px solid var(--accent)",
                   }}
                 >
-                  <div
-                    className="animate-pulse-glow mono"
-                    style={{ fontSize: "11px", color: "var(--accent)", marginBottom: "8px" }}
-                  >
-                    ⚡ {activeModel.name} выполняет задачу ({activeAgent.name.toUpperCase()})...
-                  </div>
-                  {streamingReasoning && (
+                  {!streamingContent && (
                     <div
-                      className="mono"
-                      style={{
-                        fontSize: "11px",
-                        color: "var(--text-muted)",
-                        marginBottom: "8px",
-                        whiteSpace: "pre-wrap",
-                      }}
+                      className="animate-pulse-glow mono"
+                      style={{ fontSize: "12px", color: "var(--accent)" }}
                     >
-                      {streamingReasoning}
+                      ⏳ Формирую ответ...
                     </div>
                   )}
-                  {streamingTools.map((tc) => (
-                    <div
-                      key={tc.id}
-                      className="mono"
-                      style={{
-                        fontSize: "11px",
-                        padding: "4px 8px",
-                        marginBottom: "4px",
-                        background: "var(--bg-primary)",
-                        borderRadius: "4px",
-                      }}
-                    >
-                      🔧 {tc.name}: {tc.status}
-                    </div>
-                  ))}
+                  {streamingTools
+                    .filter((tc) => tc.status === "error")
+                    .map((tc) => (
+                      <div
+                        key={tc.id}
+                        className="mono"
+                        style={{
+                          fontSize: "11px",
+                          padding: "4px 8px",
+                          marginBottom: "4px",
+                          background: "var(--bg-primary)",
+                          border: "1px solid var(--danger)",
+                          color: "var(--danger)",
+                          borderRadius: "4px",
+                        }}
+                      >
+                        ⚠️ Ошибка {tc.name}: {tc.output || tc.status}
+                      </div>
+                    ))}
                   {streamingContent && (
                     <div style={{ fontSize: "13px", whiteSpace: "pre-wrap" }}>{streamingContent}</div>
                   )}

@@ -906,19 +906,25 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
 
       if (writtenFiles.length > 0) {
         finalContent =
-          `✅ Агент **${agent.name}** (модель **${model.name}**) создал/обновил следующие файлы в рабочей области:\n\n` +
+          `✅ Созданы/обновлены файлы в рабочей области:\n\n` +
           writtenFiles
             .map(
               (f) =>
-                `### 📄 \`${f.path}\`\n*(Откройте вкладку **«Редактор»** или дерево файлов слева, чтобы редактировать этот файл)*\n\`\`\`\n${f.content.slice(0, 3500)}${
+                `### 📄 \`${f.path}\`\n\`\`\`\n${f.content.slice(0, 3500)}${
                   f.content.length > 3500 ? "\n// ..." : ""
                 }\n\`\`\``,
             )
             .join("\n\n")
       } else {
-        finalContent = toolCalls
-          .map((tc) => `### 🔧 \`${tc.name}\`\n\`\`\`text\n${(tc.output || "").slice(0, 2000)}\n\`\`\``)
-          .join("\n\n")
+        const errTools = toolCalls.filter((tc) => tc.status === "error")
+        if (errTools.length > 0) {
+          finalContent = errTools
+            .map((tc) => `⚠️ Ошибка при выполнении \`${tc.name}\`:\n\`\`\`text\n${(tc.output || "").slice(0, 2000)}\n\`\`\``)
+            .join("\n\n")
+        } else {
+          const lastOut = toolCalls[toolCalls.length - 1]?.output || ""
+          finalContent = lastOut.slice(0, 4000)
+        }
       }
       onUpdate({
         content: finalContent,
@@ -1297,20 +1303,23 @@ async function runAutonomousLocalOpenCodeAgent(params: {
         content: String(tc.args.content || toolCtx.files[String(tc.args.filePath)] || ""),
       }))
 
+    const errTools = toolCalls.filter((tc) => tc.status === "error")
     const content =
       writtenFiles.length > 0
-        ? `✅ Агент **${agent.name}** (модель **${model.name}**) выполнил задачу и записал файлы в проект:\n\n` +
+        ? `✅ Записаны файлы в проект:\n\n` +
           writtenFiles
             .map(
               (f) =>
-                `### 📄 \`${f.path}\`\n*(Файл добавлен в рабочую область — откройте вкладку **«Редактор»**, чтобы посмотреть или изменить код)*\n\`\`\`\n${f.content.slice(0, 3500)}${
+                `### 📄 \`${f.path}\`\n\`\`\`\n${f.content.slice(0, 3500)}${
                   f.content.length > 3500 ? "\n// ..." : ""
                 }\n\`\`\``,
             )
             .join("\n\n")
-        : toolCalls
-            .map((tc) => `### 🔧 \`${tc.name}\`\n\`\`\`text\n${(tc.output || "").slice(0, 2000)}\n\`\`\``)
-            .join("\n\n")
+        : errTools.length > 0
+          ? errTools
+              .map((tc) => `⚠️ Ошибка \`${tc.name}\`:\n\`\`\`text\n${(tc.output || "").slice(0, 2000)}\n\`\`\``)
+              .join("\n\n")
+          : (toolCalls[toolCalls.length - 1]?.output || "").slice(0, 4000)
 
     onUpdate({ content, reasoning, toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })
     return {
