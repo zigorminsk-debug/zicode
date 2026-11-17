@@ -62,6 +62,12 @@ import {
   createUnifiedDiff,
   detectLanguage,
 } from "./core/workspace"
+import {
+  OpenCodeSettingsScreen,
+  GitHubCollaborationView,
+  HelpAndGuideView,
+  SettingsTabId,
+} from "./components/OpenCodeSettingsAndHelp"
 
 function createInitialSession(): SessionInfo {
   const id = `ses_${Date.now().toString(36)}`
@@ -174,15 +180,60 @@ export function App() {
   const [uiMode, setUiMode] = useState<"studio" | "tui">("studio")
   const [sidebarTab, setSidebarTab] = useState<"sessions" | "files" | "todos" | "snapshots" | "mcp" | "builds">("files")
   const [sidebarOpenMobile, setSidebarOpenMobile] = useState(false)
-  const [centerTab, setCenterTab] = useState<"chat" | "editor" | "diff" | "browser" | "architecture">("chat")
+  const [centerTab, setCenterTab] = useState<
+    "chat" | "editor" | "diff" | "browser" | "github" | "help" | "architecture"
+  >("chat")
   const [activeFilePath, setActiveFilePath] = useState<string>("opencode.json")
 
-  // Modals
+  // Modals & OpenCode Full-Screen Settings (image-4 & image-5)
   const [showModelModal, setShowModelModal] = useState(false)
   const [onlyFreeFilter, setOnlyFreeFilter] = useState(true)
   const [modelSearch, setModelSearch] = useState("")
   const [selectedProviderFilter, setSelectedProviderFilter] = useState<string>("all")
   const [showSettingsModal, setShowSettingsModal] = useState(false)
+  const [settingsInitialTab, setSettingsInitialTab] = useState<SettingsTabId>("models")
+  const [enabledModels, setEnabledModels] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem("zicode_enabled_models")
+      if (saved) return JSON.parse(saved)
+    } catch {}
+    return {}
+  })
+
+  const handleCreateNewProject = (projectName: string, template: string) => {
+    const cleanName = projectName.trim() || "my-zicode-project"
+    const newFiles: Record<string, string> = {
+      "opencode.json": JSON.stringify(
+        {
+          $schema: "https://opencode.ai/config.json",
+          project: cleanName,
+          provider: "opencode",
+          model: "big-pickle",
+          freeModelsEnabled: true,
+        },
+        null,
+        2,
+      ),
+      "AGENTS.md": `# Проект: ${cleanName}\n\n## Архитектура и правила для ИИ-агента OpenCode\n- Шаблон: ${template}\n- Используйте строгую типизацию и модульную структуру.\n- Перед изменением файлов проверяйте зависимости через \`grep\` и \`lsp_diagnostics\`.\n`,
+      "README.md": `# ${cleanName}\n\nПроект создан в среде **ZiCode (OpenCode Studio)**.\n`,
+    }
+
+    if (template === "python-api") {
+      newFiles["src/main.py"] = `from fastapi import FastAPI\n\napp = FastAPI(title="${cleanName}")\n\n@app.get("/")\ndef read_root():\n    return {"project": "${cleanName}", "status": "ok"}\n`
+      setActiveFilePath("src/main.py")
+    } else if (template === "node-cli") {
+      newFiles["src/server.js"] = `const http = require("node:http");\n\nconst server = http.createServer((req, res) => {\n  res.writeHead(200, { "Content-Type": "application/json" });\n  res.end(JSON.stringify({ project: "${cleanName}", ok: true }));\n});\n\nserver.listen(3000, () => console.log("${cleanName} listening on :3000"));\n`
+      setActiveFilePath("src/server.js")
+    } else if (template === "ts-app") {
+      newFiles["src/index.ts"] = `export interface AppConfig {\n  name: string;\n  version: string;\n}\n\nexport function startApp(config: AppConfig): string {\n  return \`Запущен проект \${config.name} v\${config.version}\`;\n}\n\nconsole.log(startApp({ name: "${cleanName}", version: "1.0.0" }));\n`
+      setActiveFilePath("src/index.ts")
+    } else {
+      setActiveFilePath("AGENTS.md")
+    }
+
+    setFiles(newFiles)
+    setCenterTab("editor")
+  }
 
   // Terminal drawer
   const [showTerminal, setShowTerminal] = useState(false)
@@ -1008,21 +1059,47 @@ export function App() {
           </button>
 
           <button
-            onClick={() => setShowSettingsModal(true)}
-            title="Настройки API-ключей, провайдеров и сборок Android/Windows"
+            onClick={() => setCenterTab("help")}
+            title="Полная справка: как настроить программу, создать проект, подключить GitHub и Chrome"
             style={{
-              padding: "6px 9px",
+              padding: "6px 10px",
               borderRadius: "6px",
-              background: "var(--bg-tertiary)",
+              background: centerTab === "help" ? "var(--accent)" : "var(--bg-tertiary)",
+              color: centerTab === "help" ? "#0a0c10" : "var(--text-primary)",
               border: "1px solid var(--border-color)",
               cursor: "pointer",
               display: "flex",
               alignItems: "center",
               gap: "5px",
               fontSize: "11px",
+              fontWeight: 700,
+            }}
+          >
+            <span>📖 Справка</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setSettingsInitialTab("models")
+              setShowSettingsModal(true)
+            }}
+            title="Полноэкранное меню настроек OpenCode (Провайдеры, Модели OpenCode Free, Расширения, Проекты)"
+            style={{
+              padding: "6px 10px",
+              borderRadius: "6px",
+              background: "var(--accent)",
+              color: "#0a0c10",
+              border: "1px solid var(--border-color)",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "11px",
+              fontWeight: 700,
             }}
           >
             <Settings size={14} />
+            <span>Меню / Модели</span>
           </button>
         </div>
       </header>
@@ -1555,6 +1632,8 @@ export function App() {
                 { id: "editor", label: `Редактор (${activeFilePath})`, icon: <Code2 size={13} /> },
                 { id: "diff", label: `Diff изменений (${sessionDiffs.length})`, icon: <GitBranch size={13} /> },
                 { id: "browser", label: `🌐 Браузер Chrome (${browserTabs.length})`, icon: <Search size={13} /> },
+                { id: "github", label: "🐙 GitHub API (Совместная работа)", icon: <FolderGit2 size={13} /> },
+                { id: "help", label: "📖 Справка и как создать проект", icon: <Sparkles size={13} /> },
                 { id: "architecture", label: "Анализ OpenCode & Ключ Android", icon: <ShieldCheck size={13} /> },
               ].map((t) => (
                 <button
@@ -2227,6 +2306,35 @@ export function App() {
           )}
 
           {/* =================================================================
+              TAB 3.6: GITHUB API COLLABORATION (Подключение к GitHub по API-ключу)
+             ================================================================= */}
+          {centerTab === "github" && (
+            <GitHubCollaborationView
+              files={files}
+              setFiles={setFiles}
+              onSelectFile={(path) => {
+                setActiveFilePath(path)
+                setCenterTab("editor")
+              }}
+            />
+          )}
+
+          {/* =================================================================
+              TAB 3.7: IN-APP HELP & PROJECT CREATION GUIDE («📖 Справка»)
+             ================================================================= */}
+          {centerTab === "help" && (
+            <HelpAndGuideView
+              onOpenSettings={(tab) => {
+                setSettingsInitialTab(tab)
+                setShowSettingsModal(true)
+              }}
+              onOpenGitHub={() => setCenterTab("github")}
+              onOpenBrowserTab={() => setCenterTab("browser")}
+              onCreateNewProject={handleCreateNewProject}
+            />
+          )}
+
+          {/* =================================================================
               TAB 4: OPENCODE ARCHITECTURE ANALYSIS & ANDROID SIGNING KEY INFO
              ================================================================= */}
           {centerTab === "architecture" && (
@@ -2706,96 +2814,51 @@ export function App() {
       )}
 
       {/* =====================================================================
-          MODAL 2: SETTINGS & API KEYS
+          MODAL 2: FULL-SCREEN OPENCODE SETTINGS MENU (Exact replica of image-4 & image-5)
          ===================================================================== */}
       {showSettingsModal && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.72)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "16px",
-            zIndex: 50,
+        <OpenCodeSettingsScreen
+          initialTab={settingsInitialTab}
+          onClose={() => setShowSettingsModal(false)}
+          providers={PROVIDERS}
+          models={models}
+          selectedProviderId={activeProvider.id}
+          selectedModelId={activeModel.id}
+          onSelectModel={(providerId, modelId) => {
+            updateActiveSession((s) => ({
+              ...s,
+              providerId,
+              modelId,
+            }))
           }}
-        >
-          <div
-            style={{
-              width: "100%",
-              maxWidth: "640px",
-              maxHeight: "84vh",
-              background: "var(--bg-secondary)",
-              border: "1px solid var(--border-color)",
-              borderRadius: "12px",
-              display: "flex",
-              flexDirection: "column",
-              overflow: "hidden",
-            }}
-          >
-            <div
-              style={{
-                padding: "14px 18px",
-                borderBottom: "1px solid var(--border-color)",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <h3 style={{ fontSize: "15px", fontWeight: 700 }}>Настройки провайдеров OpenCode и API-ключей</h3>
-              <button
-                onClick={() => setShowSettingsModal(false)}
-                style={{ background: "transparent", border: "none", cursor: "pointer" }}
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div style={{ flex: 1, overflowY: "auto", padding: "16px", display: "grid", gap: "12px" }}>
-              {PROVIDERS.map((p) => (
-                <div
-                  key={p.id}
-                  style={{
-                    padding: "10px 12px",
-                    borderRadius: "8px",
-                    background: "var(--bg-tertiary)",
-                    border: "1px solid var(--border-color)",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                    <strong style={{ fontSize: "13px" }}>{p.name}</strong>
-                    <span className="mono" style={{ fontSize: "10px", color: "var(--accent)" }}>
-                      {p.badge}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "8px" }}>
-                    {p.description}
-                  </div>
-                  <input
-                    type="password"
-                    value={apiKeys[p.id] ?? ""}
-                    onChange={(e) => setApiKeys((prev) => ({ ...prev, [p.id]: e.target.value }))}
-                    placeholder={
-                      p.id === "opencode"
-                        ? "public (бесплатный доступ по умолчанию без ключа)"
-                        : `Введите ${p.envVar} (опционально для бесплатного пула)...`
-                    }
-                    className="mono"
-                    style={{
-                      width: "100%",
-                      padding: "6px 10px",
-                      borderRadius: "6px",
-                      background: "var(--bg-primary)",
-                      border: "1px solid var(--border-color)",
-                      fontSize: "11px",
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
+          enabledModels={enabledModels}
+          onToggleModel={(key, enabled) => {
+            setEnabledModels((prev) => {
+              const next = { ...prev, [key]: enabled }
+              try {
+                localStorage.setItem("zicode_enabled_models", JSON.stringify(next))
+              } catch {}
+              return next
+            })
+          }}
+          apiKeys={apiKeys}
+          onSaveApiKey={(providerId, key) => setApiKeys((prev) => ({ ...prev, [providerId]: key }))}
+          customBaseUrls={customBaseUrls}
+          onSaveBaseUrl={(providerId, url) => setCustomBaseUrls((prev) => ({ ...prev, [providerId]: url }))}
+          themes={THEMES}
+          themeId={themeId}
+          onSelectTheme={(id) => setThemeId(id)}
+          mcpServers={mcpServers}
+          onToggleMcp={(id) =>
+            setMcpServers((prev) => prev.map((s) => (s.id === id ? { ...s, enabled: !s.enabled } : s)))
+          }
+          files={files}
+          setFiles={setFiles}
+          onCreateNewProject={handleCreateNewProject}
+          browserTabs={browserTabs}
+          onOpenGitHubTab={() => setCenterTab("github")}
+          onOpenHelpTab={() => setCenterTab("help")}
+        />
       )}
     </div>
   )

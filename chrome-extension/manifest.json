@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ZiCode (OpenCode) — Chrome Browser Bridge",
-  "version": "2.3.0",
-  "description": "Позволяет программе ZiCode (OpenCode для Windows и Android) видеть и читать ваши открытые вкладки и веб-страницы в Google Chrome.",
+  "name": "ZiCode Chrome Bridge — Чтение открытых вкладок для OpenCode AI",
+  "version": "2.4.0",
+  "description": "Позволяет программе ZiCode (Windows EXE / Web / Android) видеть список ваших открытых вкладок Chrome и читать текст страниц.",
   "permissions": [
     "tabs",
     "activeTab",
@@ -11,14 +11,16 @@
     "alarms"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "<all_urls>",
+    "http://127.0.0.1:4096/*",
+    "http://localhost:4096/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "ZiCode Browser Bridge (OpenCode)",
+    "default_title": "ZiCode Chrome Bridge — Синхронизация вкладок",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

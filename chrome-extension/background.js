@@ -1,182 +1,225 @@
-// ZiCode (OpenCode) Background Service Worker (Manifest V3)
+/**
+ * ZiCode Chrome Bridge — Background Service Worker (Manifest V3)
+ *
+ * Collects open browser tabs (title, URL, active status) and extracts
+ * readable text from open HTTP/HTTPS pages.
+ *
+ * Delivers snapshot to ZiCode via TWO channels simultaneously:
+ * 1. HTTP POST to http://127.0.0.1:4096/api/browser/sync (for ZiCode Windows .exe / local server)
+ * 2. Direct chrome.tabs.sendMessage to any open ZiCode web app tab (works on any URL/host)
+ */
 
-const DEFAULT_SERVER_URL = "http://127.0.0.1:4096"
+const DEFAULT_ENDPOINTS = [
+  "http://127.0.0.1:4096/api/browser/sync",
+  "http://localhost:4096/api/browser/sync",
+]
 
-async function getSettings() {
-  const data = await chrome.storage.local.get(["serverUrl", "autoSync"])
-  return {
-    serverUrl: (data.serverUrl || DEFAULT_SERVER_URL).replace(/\/+$/, ""),
-    autoSync: data.autoSync !== false,
+let syncInFlight = false
+
+function extractDomSnapshotInPage() {
+  try {
+    const selection = window.getSelection ? String(window.getSelection()).trim() : ""
+    const metaDesc =
+      document.querySelector('meta[name="description"]')?.getAttribute("content") ||
+      document.querySelector('meta[property="og:description"]')?.getAttribute("content") ||
+      ""
+
+    const headings = Array.from(document.querySelectorAll("h1, h2, h3"))
+      .map((el) => (el.textContent || "").trim())
+      .filter(Boolean)
+      .slice(0, 25)
+
+    const bodyText = (document.body?.innerText || document.documentElement?.innerText || "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .slice(0, 24000)
+
+    return {
+      title: document.title || "",
+      url: location.href,
+      description: metaDesc,
+      selection,
+      headings,
+      content: bodyText,
+      extractedAt: Date.now(),
+    }
+  } catch (e) {
+    return {
+      title: document.title || "",
+      url: location.href,
+      content: "",
+      error: String(e),
+    }
   }
 }
 
-async function extractFromTab(tab) {
-  if (!tab?.id || !tab.url || !/^https?:\/\//i.test(tab.url)) {
-    return {
-      id: tab?.id || 0,
-      title: tab?.title || "System Tab",
-      url: tab?.url || "",
-      active: Boolean(tab?.active),
-      windowId: tab?.windowId || 0,
+async function collectOpenTabsSnapshot() {
+  const allTabs = await chrome.tabs.query({})
+  const tabSummaries = []
+  let activeTabDetail = null
+  let extractedCount = 0
+
+  for (const tab of allTabs) {
+    const url = tab.url || ""
+    const isRestricted =
+      !url ||
+      url.startsWith("chrome://") ||
+      url.startsWith("chrome-extension://") ||
+      url.startsWith("edge://") ||
+      url.startsWith("about:")
+
+    const item = {
+      id: tab.id,
+      windowId: tab.windowId,
+      index: tab.index,
+      title: tab.title || "Без заголовка",
+      url,
+      active: Boolean(tab.active),
+      pinned: Boolean(tab.pinned),
+      favIconUrl: tab.favIconUrl || "",
       content: "",
       headings: [],
       selection: "",
     }
-  }
 
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      func: () => {
-        const selection = window.getSelection ? String(window.getSelection().toString()).trim() : ""
-        const headings = Array.from(document.querySelectorAll("h1, h2, h3"))
-          .slice(0, 20)
-          .map((el) => `${el.tagName}: ${(el.textContent || "").trim()}`)
-          .filter(Boolean)
-        const rawText = document.body ? document.body.innerText || document.body.textContent || "" : ""
-        return {
-          title: document.title || window.location.hostname,
-          url: window.location.href,
-          selection,
-          headings,
-          content: rawText.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim().slice(0, 20000),
+    // Extract full readable text from active tabs and up to 8 open web tabs
+    if (!isRestricted && tab.id && (tab.active || extractedCount < 8)) {
+      extractedCount++
+      try {
+        const injected = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: extractDomSnapshotInPage,
+        })
+        const snap = injected?.[0]?.result
+        if (snap) {
+          item.content = snap.content || ""
+          item.headings = snap.headings || []
+          item.selection = snap.selection || ""
+          item.description = snap.description || ""
+          if (tab.active) {
+            activeTabDetail = item
+          }
         }
-      },
-    })
-    const extracted = results?.[0]?.result
-    if (extracted) {
-      return {
-        id: tab.id,
-        title: extracted.title || tab.title || "",
-        url: extracted.url || tab.url || "",
-        active: Boolean(tab.active),
-        windowId: tab.windowId || 0,
-        favIconUrl: tab.favIconUrl || "",
-        selection: extracted.selection || "",
-        headings: extracted.headings || [],
-        content: extracted.content || "",
+      } catch {
+        // Ignore tabs where script injection is blocked (e.g. Chrome Web Store)
       }
     }
-  } catch {}
+
+    tabSummaries.push(item)
+  }
 
   return {
-    id: tab.id,
-    title: tab.title || "",
-    url: tab.url || "",
-    active: Boolean(tab.active),
-    windowId: tab.windowId || 0,
-    favIconUrl: tab.favIconUrl || "",
-    selection: "",
-    headings: [],
-    content: "",
+    timestamp: Date.now(),
+    totalTabs: tabSummaries.length,
+    activeTab: activeTabDetail || tabSummaries.find((t) => t.active) || tabSummaries[0] || null,
+    tabs: tabSummaries,
   }
 }
 
-async function collectAndSyncTabs() {
+async function syncTabsToZiCode() {
+  if (syncInFlight) return null
+  syncInFlight = true
   try {
-    const settings = await getSettings()
+    const snapshot = await collectOpenTabsSnapshot()
+    const stored = await chrome.storage.local.get(["customServerUrl"])
+    const endpoints = [...DEFAULT_ENDPOINTS]
+    if (stored.customServerUrl && typeof stored.customServerUrl === "string") {
+      const clean = stored.customServerUrl.replace(/\/+$/, "") + "/api/browser/sync"
+      if (!endpoints.includes(clean)) endpoints.unshift(clean)
+    }
+
+    let serverConnected = false
+    for (const ep of endpoints) {
+      try {
+        const res = await fetch(ep, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(snapshot),
+        })
+        if (res.ok) {
+          serverConnected = true
+          break
+        }
+      } catch {
+        // Next endpoint
+      }
+    }
+
+    // Also broadcast directly to any open ZiCode web app tab via content script
     const allTabs = await chrome.tabs.query({})
-    const enrichedTabs = []
-
+    let webInjectedCount = 0
     for (const tab of allTabs) {
-      // Skip ZiCode itself when choosing the "active external page", but still include in tab list
-      const item = await extractFromTab(tab)
-      enrichedTabs.push(item)
-    }
-
-    const activeExternal =
-      enrichedTabs.find((t) => t.active && !t.title.includes("ZiCode")) ||
-      enrichedTabs.find((t) => !t.title.includes("ZiCode") && t.content.length > 0) ||
-      enrichedTabs.find((t) => t.active) ||
-      enrichedTabs[0] ||
-      null
-
-    const payload = {
-      source: "zicode-chrome-extension",
-      version: "2.3.0",
-      updatedAt: Date.now(),
-      activeTab: activeExternal,
-      tabs: enrichedTabs,
-    }
-
-    await chrome.storage.local.set({
-      lastSyncAt: payload.updatedAt,
-      lastTabsCount: enrichedTabs.length,
-    })
-
-    // 1. Broadcast directly into any open ZiCode Web / Studio tab in Chrome
-    for (const tab of allTabs) {
-      if (!tab.id || !tab.url || !/^https?:\/\//i.test(tab.url)) continue
-      if (
-        tab.title?.includes("ZiCode") ||
-        tab.url.includes("4096") ||
-        tab.url.includes("5173") ||
-        tab.url.includes("e2b.app")
-      ) {
-        try {
-          await chrome.scripting.executeScript({
-            target: { tabId: tab.id },
-            func: (syncData) => {
-              window.postMessage({ type: "ZICODE_BROWSER_SYNC", payload: syncData }, "*")
-            },
-            args: [payload],
-          })
-        } catch {}
+      if (!tab.id || !tab.url || tab.url.startsWith("chrome://")) continue
+      try {
+        await chrome.tabs.sendMessage(tab.id, {
+          type: "ZICODE_EXTENSION_TABS_PAYLOAD",
+          payload: snapshot,
+        })
+        webInjectedCount++
+      } catch {
+        // Content script not attached on this tab
       }
     }
 
-    // 2. Send POST to ZiCode Desktop / Local Server (http://127.0.0.1:4096/api/browser/sync)
-    try {
-      const res = await fetch(`${settings.serverUrl}/api/browser/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      })
-      if (res.ok) {
-        await chrome.storage.local.set({ lastServerStatus: "connected" })
-      } else {
-        await chrome.storage.local.set({ lastServerStatus: `HTTP ${res.status}` })
-      }
-    } catch {
-      await chrome.storage.local.set({ lastServerStatus: "browser-bridge-mode" })
+    const status = {
+      lastSync: Date.now(),
+      totalTabs: snapshot.totalTabs,
+      activeTitle: snapshot.activeTab?.title || "",
+      serverConnected,
+      webInjectedCount,
     }
-
-    return payload
+    await chrome.storage.local.set({ lastSyncStatus: status, latestSnapshot: snapshot })
+    return { status, snapshot }
   } catch (err) {
-    return { error: String(err?.message || err), tabs: [] }
+    return { error: String(err) }
+  } finally {
+    syncInFlight = false
   }
 }
 
-// Auto-sync on tab switch and page load completion
-chrome.tabs.onActivated.addListener(async () => {
-  const { autoSync } = await getSettings()
-  if (autoSync) collectAndSyncTabs()
-})
-
-chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo) => {
-  if (changeInfo.status === "complete") {
-    const { autoSync } = await getSettings()
-    if (autoSync) collectAndSyncTabs()
-  }
-})
-
-// Periodic alarm every 30s
+// Auto-sync on tab activation, navigation completion, window focus change, or periodic heartbeat
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create("zicode-sync", { periodInMinutes: 0.5 })
-  collectAndSyncTabs()
+  chrome.alarms.create("zicode-sync-alarm", { periodInMinutes: 0.25 })
+  syncTabsToZiCode()
 })
 
-chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name === "zicode-sync") {
-    const { autoSync } = await getSettings()
-    if (autoSync) collectAndSyncTabs()
+chrome.runtime.onStartup.addListener(() => {
+  chrome.alarms.create("zicode-sync-alarm", { periodInMinutes: 0.25 })
+  syncTabsToZiCode()
+})
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === "zicode-sync-alarm") {
+    syncTabsToZiCode()
   }
 })
+
+chrome.tabs.onActivated.addListener(() => {
+  syncTabsToZiCode()
+})
+
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+  if (changeInfo.status === "complete" || changeInfo.title) {
+    syncTabsToZiCode()
+  }
+})
+
+chrome.tabs.onRemoved.addListener(() => {
+  syncTabsToZiCode()
+})
+
+chrome.windows.onFocusChanged.addListener(() => {
+  syncTabsToZiCode()
+})
+
+// Continuous 3-second heartbeat while service worker is awake
+setInterval(() => {
+  syncTabsToZiCode()
+}, 3000)
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === "TRIGGER_SYNC_NOW") {
-    collectAndSyncTabs().then((res) => sendResponse(res))
+  if (msg?.type === "ZICODE_FORCE_SYNC" || msg?.type === "ZICODE_PAGE_REQUEST_SYNC") {
+    syncTabsToZiCode().then((res) => sendResponse(res))
     return true
   }
-  return false
 })

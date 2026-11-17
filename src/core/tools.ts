@@ -744,15 +744,15 @@ export async function executeToolCall(
 
     case "browser_tabs": {
       let tabs: BrowserTabItem[] = ctx.browserTabs ?? []
-      if (tabs.length === 0) {
-        try {
-          const res = await fetch("/api/browser/tabs")
-          if (res.ok) {
-            const data = await res.json()
-            if (Array.isArray(data?.tabs)) tabs = data.tabs
+      try {
+        const res = await fetch("/api/browser/tabs", { cache: "no-store" })
+        if (res.ok) {
+          const data = await res.json()
+          if (Array.isArray(data?.tabs) && data.tabs.length > 0) {
+            tabs = data.tabs
           }
-        } catch {}
-      }
+        }
+      } catch {}
 
       if (tabs.length === 0) {
         return {

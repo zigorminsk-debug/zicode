@@ -90,6 +90,89 @@ export function buildOpenCodeHeaders(
   return headers
 }
 
+function parseRawInferenceResponse(rawText: string): any {
+  const trimmed = (rawText || "").trim()
+  if (!trimmed) return null
+
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed)
+    } catch {}
+  }
+
+  if (trimmed.includes("data:")) {
+    let content = ""
+    let reasoningContent = ""
+    const toolCallsByIndex = new Map<number, any>()
+    let usage: any = undefined
+
+    for (const line of trimmed.split(/\r?\n/)) {
+      const clean = line.trim()
+      if (!clean.startsWith("data:")) continue
+      const payloadStr = clean.slice(5).trim()
+      if (!payloadStr || payloadStr === "[DONE]") continue
+      try {
+        const evt = JSON.parse(payloadStr)
+        if (evt.usage) usage = evt.usage
+        const choice = evt.choices?.[0]
+        if (choice) {
+          if (choice.usage) usage = choice.usage
+          const delta = choice.delta || choice.message
+          if (delta) {
+            if (typeof delta.content === "string") content += delta.content
+            if (typeof delta.reasoning_content === "string") reasoningContent += delta.reasoning_content
+            else if (typeof delta.reasoning === "string") reasoningContent += delta.reasoning
+            else if (typeof delta.reasoning_text === "string") reasoningContent += delta.reasoning_text
+
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index ?? 0
+                const existing = toolCallsByIndex.get(idx) || {
+                  id: tc.id || `call_${idx}_${Date.now()}`,
+                  type: "function",
+                  function: { name: "", arguments: "" },
+                }
+                if (tc.id) existing.id = tc.id
+                if (tc.function?.name) existing.function.name += tc.function.name
+                if (tc.function?.arguments) existing.function.arguments += tc.function.arguments
+                toolCallsByIndex.set(idx, existing)
+              }
+            }
+          }
+        }
+        if (evt.type === "content_block_delta" && evt.delta) {
+          if (evt.delta.type === "text_delta" && typeof evt.delta.text === "string") {
+            content += evt.delta.text
+          } else if (evt.delta.type === "thinking_delta" && typeof evt.delta.thinking === "string") {
+            reasoningContent += evt.delta.thinking
+          }
+        }
+      } catch {}
+    }
+
+    const toolCalls = Array.from(toolCallsByIndex.values()).filter((t) => t.function.name)
+    if (content || reasoningContent || toolCalls.length > 0) {
+      return {
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content,
+              ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+              ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+            },
+            finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
+          },
+        ],
+        ...(usage ? { usage } : {}),
+      }
+    }
+  }
+
+  return null
+}
+
 async function sendInferenceHttp(
   url: string,
   headers: Record<string, string>,
@@ -102,7 +185,7 @@ async function sendInferenceHttp(
     try {
       const raw = window.ZiCodeNativeBridge.httpPost(url, JSON.stringify(headers), bodyStr)
       if (raw) {
-        const parsed = JSON.parse(raw)
+        const parsed = parseRawInferenceResponse(raw)
         if (parsed && !parsed.__bridgeError && (parsed.choices || parsed.content)) return parsed
       }
     } catch {}
@@ -113,7 +196,7 @@ async function sendInferenceHttp(
     const proxyRes = await fetch("/api/ai/proxy", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, headers, body: bodyObj }),
+      body: JSON.stringify({ url, headers, payload: bodyObj, body: bodyObj }),
     })
     if (proxyRes.ok) {
       const data = await proxyRes.json()
@@ -126,18 +209,25 @@ async function sendInferenceHttp(
   // 3. Direct Browser Fetch (works directly from user's browser even if preview backend is sandboxed)
   const directRes = await fetch(url, {
     method: "POST",
-    headers,
+    headers: {
+      Accept: "text/event-stream, application/json",
+      ...headers,
+    },
     body: bodyStr,
   })
   if (!directRes.ok) {
     const errText = await directRes.text()
     throw new Error(`HTTP ${directRes.status}: ${errText.slice(0, 300)}`)
   }
-  const json = await directRes.json()
-  if (json?.error) {
-    throw new Error(typeof json.error === "string" ? json.error : JSON.stringify(json.error))
+  const rawText = await directRes.text()
+  const parsed = parseRawInferenceResponse(rawText)
+  if (!parsed) {
+    throw new Error("Unable to parse upstream response")
   }
-  return json
+  if (parsed?.error) {
+    throw new Error(typeof parsed.error === "string" ? parsed.error : JSON.stringify(parsed.error))
+  }
+  return parsed
 }
 
 async function tryFreeGatewayCompletion(
@@ -153,9 +243,15 @@ async function tryFreeGatewayCompletion(
 ): Promise<any> {
   const headers = buildOpenCodeHeaders(session, provider, model, apiKey)
 
-  // Candidate routes: primary provider endpoint -> OpenCode Zen v1 -> Free zero-key OpenAI gateway
+  // Candidate routes: OpenCode SSE protocol (stream:true + max_completion_tokens) -> standard JSON -> Zen -> Free fallback
   const isPublicFree = !apiKey || apiKey === "public"
-  const candidateRoutes: { url: string; headers: Record<string, string>; modelName: string; sendTools: boolean }[] = []
+  const candidateRoutes: {
+    url: string
+    headers: Record<string, string>
+    modelName: string
+    sendTools: boolean
+    streamMode?: boolean
+  }[] = []
 
   const primaryEndpoint =
     model.protocol === "messages"
@@ -169,6 +265,15 @@ async function tryFreeGatewayCompletion(
     headers,
     modelName: model.id,
     sendTools: enableTools,
+    streamMode: true,
+  })
+
+  candidateRoutes.push({
+    url: primaryEndpoint,
+    headers,
+    modelName: model.id,
+    sendTools: enableTools,
+    streamMode: false,
   })
 
   if (provider.id === "opencode") {
@@ -177,6 +282,7 @@ async function tryFreeGatewayCompletion(
       headers,
       modelName: model.id,
       sendTools: false,
+      streamMode: true,
     })
   }
 
@@ -186,12 +292,14 @@ async function tryFreeGatewayCompletion(
       headers: { "Content-Type": "application/json" },
       modelName: "openai",
       sendTools: enableTools,
+      streamMode: false,
     })
     candidateRoutes.push({
       url: "https://text.pollinations.ai/openai",
       headers: { "Content-Type": "application/json" },
       modelName: "openai",
       sendTools: false,
+      streamMode: false,
     })
   }
 
@@ -205,11 +313,19 @@ async function tryFreeGatewayCompletion(
               max_tokens: Math.min(model.outputLimit || 4096, 4096),
               system: systemMessage,
               messages: apiMessages.filter((m) => m.role !== "system"),
+              ...(route.streamMode ? { stream: true } : {}),
             }
           : {
               model: route.modelName,
               messages: apiMessages,
               ...(route.sendTools ? { tools: OPENCODE_TOOL_SCHEMAS } : {}),
+              ...(route.streamMode
+                ? {
+                    stream: true,
+                    stream_options: { include_usage: true },
+                    max_completion_tokens: Math.min(model.outputLimit || 4096, 4096),
+                  }
+                : {}),
               temperature,
             }
 
@@ -233,8 +349,21 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
   let finalContent = ""
   let finalReasoning = ""
 
+  // Always refresh open Chrome tabs from /api/browser/tabs before running agent turn
+  let freshBrowserTabs = toolCtx.browserTabs ?? []
+  try {
+    const tabsRes = await fetch("/api/browser/tabs", { cache: "no-store" })
+    if (tabsRes.ok) {
+      const tabsData = await tabsRes.json()
+      if (Array.isArray(tabsData?.tabs) && tabsData.tabs.length > 0) {
+        freshBrowserTabs = tabsData.tabs
+      }
+    }
+  } catch {}
+
   const wrappedCtx: ToolExecutionContext = {
     ...toolCtx,
+    browserTabs: freshBrowserTabs,
     onQuestion: (q) => {
       latestQuestion = q
       toolCtx.onQuestion?.(q)
@@ -253,9 +382,9 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     .join(", ")
 
   const openTabsSummary =
-    toolCtx.browserTabs && toolCtx.browserTabs.length > 0
-      ? toolCtx.browserTabs
-          .slice(0, 15)
+    freshBrowserTabs && freshBrowserTabs.length > 0
+      ? freshBrowserTabs
+          .slice(0, 18)
           .map((t) => `[${t.active ? "ACTIVE" : "TAB"}] ${t.title} (${t.url})`)
           .join(" | ")
       : "No tabs synced yet (use browser_tabs tool or ZiCode Chrome Extension)"

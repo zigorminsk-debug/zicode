@@ -1,12 +1,140 @@
 const http = require("node:http")
 const fs = require("node:fs")
+const os = require("node:os")
 const path = require("node:path")
 const { exec } = require("node:child_process")
 
 const PORT = Number(process.env.PORT || 4096)
 const HOST = process.env.HOST || "0.0.0.0"
-const ROOT_DIR = path.resolve(__dirname, "..")
-const DIST_DIR = path.join(ROOT_DIR, "dist")
+const DIST_DIR = path.resolve(__dirname, "..", "dist")
+const TABS_CACHE_FILE = path.join(os.tmpdir(), "zicode-browser-tabs.json")
+
+// In-memory + disk-persisted store of open Chrome tabs pushed by the ZiCode Chrome Extension
+let browserTabsStore = {
+  updatedAt: 0,
+  activeTab: null,
+  tabs: [],
+}
+
+function loadPersistedTabs() {
+  try {
+    if (fs.existsSync(TABS_CACHE_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(TABS_CACHE_FILE, "utf-8"))
+      if (parsed && Array.isArray(parsed.tabs)) {
+        browserTabsStore = parsed
+      }
+    }
+  } catch {}
+}
+
+function savePersistedTabs(store) {
+  try {
+    fs.writeFileSync(TABS_CACHE_FILE, JSON.stringify(store), "utf-8")
+  } catch {}
+}
+
+loadPersistedTabs()
+
+/**
+ * Parses OpenAI / OpenCode Zen SSE (`data: {...}`) streams into a standard
+ * ChatCompletion JSON payload (`{ choices: [{ message: { role, content, reasoning_content, tool_calls } }], usage }`).
+ */
+function parseUpstreamResponse(rawText) {
+  const trimmed = (rawText || "").trim()
+  if (!trimmed) return { error: "Empty upstream response" }
+
+  // 1. Try standard JSON first
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      return JSON.parse(trimmed)
+    } catch {}
+  }
+
+  // 2. Parse SSE stream (data: {...}) from OpenCode Free / OpenAI / Anthropic endpoints
+  if (trimmed.includes("data:")) {
+    let content = ""
+    let reasoningContent = ""
+    const toolCallsByIndex = new Map()
+    let usage = undefined
+    let errorObj = null
+
+    const lines = trimmed.split(/\r?\n/)
+    for (const line of lines) {
+      const clean = line.trim()
+      if (!clean.startsWith("data:")) continue
+      const payloadStr = clean.slice(5).trim()
+      if (!payloadStr || payloadStr === "[DONE]") continue
+      try {
+        const evt = JSON.parse(payloadStr)
+        if (evt.error) {
+          errorObj = evt.error
+        }
+        if (evt.usage) {
+          usage = evt.usage
+        }
+        // OpenAI / OpenCode Zen format
+        const choice = evt.choices?.[0]
+        if (choice) {
+          if (choice.usage) usage = choice.usage
+          const delta = choice.delta || choice.message
+          if (delta) {
+            if (typeof delta.content === "string") content += delta.content
+            if (typeof delta.reasoning_content === "string") reasoningContent += delta.reasoning_content
+            else if (typeof delta.reasoning === "string") reasoningContent += delta.reasoning
+            else if (typeof delta.reasoning_text === "string") reasoningContent += delta.reasoning_text
+
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index ?? 0
+                const existing = toolCallsByIndex.get(idx) || {
+                  id: tc.id || `call_${idx}_${Date.now()}`,
+                  type: "function",
+                  function: { name: "", arguments: "" },
+                }
+                if (tc.id) existing.id = tc.id
+                if (tc.function?.name) existing.function.name += tc.function.name
+                if (tc.function?.arguments) existing.function.arguments += tc.function.arguments
+                toolCallsByIndex.set(idx, existing)
+              }
+            }
+          }
+        }
+        // Anthropic SSE format
+        if (evt.type === "content_block_delta" && evt.delta) {
+          if (evt.delta.type === "text_delta" && typeof evt.delta.text === "string") {
+            content += evt.delta.text
+          } else if (evt.delta.type === "thinking_delta" && typeof evt.delta.thinking === "string") {
+            reasoningContent += evt.delta.thinking
+          }
+        }
+      } catch {}
+    }
+
+    const toolCalls = Array.from(toolCallsByIndex.values()).filter((t) => t.function.name)
+    if (content || reasoningContent || toolCalls.length > 0) {
+      return {
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content,
+              ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+              ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+            },
+            finish_reason: toolCalls.length > 0 ? "tool_calls" : "stop",
+          },
+        ],
+        ...(usage ? { usage } : {}),
+      }
+    }
+    if (errorObj) {
+      return { error: errorObj }
+    }
+  }
+
+  return { raw: rawText }
+}
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -15,29 +143,35 @@ const MIME_TYPES = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
   ".ico": "image/x-icon",
   ".zip": "application/zip",
 }
 
-// In-memory store for Chrome Extension synced browser tabs
-let browserState = {
-  updatedAt: 0,
-  activeTab: null,
-  tabs: [],
+function sendJson(res, status, data) {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Private-Network": "true",
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+  })
+  res.end(JSON.stringify(data))
 }
 
-function readJsonBody(req) {
+function readBody(req) {
   return new Promise((resolve, reject) => {
-    let body = ""
+    let raw = ""
     req.on("data", (chunk) => {
-      body += chunk
-      if (body.length > 25 * 1024 * 1024) {
+      raw += chunk
+      if (raw.length > 10 * 1024 * 1024) {
         reject(new Error("Payload too large"))
       }
     })
     req.on("end", () => {
       try {
-        resolve(body ? JSON.parse(body) : {})
+        resolve(raw ? JSON.parse(raw) : {})
       } catch (err) {
         reject(err)
       }
@@ -46,143 +180,176 @@ function readJsonBody(req) {
   })
 }
 
-const CORS_HEADERS = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Private-Network": "true",
-}
-
-function sendJson(res, status, data) {
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    ...CORS_HEADERS,
-  })
-  res.end(JSON.stringify(data))
-}
-
 function createServer(port = PORT, host = HOST) {
   const server = http.createServer(async (req, res) => {
     const urlObj = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`)
     const pathname = urlObj.pathname
 
     if (req.method === "OPTIONS") {
-      res.writeHead(204, CORS_HEADERS)
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Private-Network": "true",
+      })
       return res.end()
     }
 
+    // 1. Health & OpenCode Server info
     if (pathname === "/api/health") {
+      loadPersistedTabs()
       return sendJson(res, 200, {
         status: "ok",
-        app: "ZiCode (OpenCode Engine)",
-        version: "2.3.0",
+        engine: "ZiCode (OpenCode Core v2.4.0)",
         platform: process.platform,
         arch: process.arch,
-        browserTabsCount: browserState.tabs.length,
+        browserTabsCount: browserTabsStore.tabs.length,
+        timestamp: Date.now(),
       })
     }
 
-    // Chrome Extension Sync Endpoint
+    // 1b. Chrome Extension Bridge: Receive open tabs & active page DOM content
     if (pathname === "/api/browser/sync" && req.method === "POST") {
       try {
-        const body = await readJsonBody(req)
-        browserState = {
+        const body = await readBody(req)
+        const tabs = Array.isArray(body.tabs) ? body.tabs : []
+        browserTabsStore = {
           updatedAt: Date.now(),
-          activeTab: body.activeTab || null,
-          tabs: Array.isArray(body.tabs) ? body.tabs : [],
+          activeTab: body.activeTab || tabs.find((t) => t.active) || tabs[0] || null,
+          tabs,
         }
+        savePersistedTabs(browserTabsStore)
         return sendJson(res, 200, {
           ok: true,
-          tabsCount: browserState.tabs.length,
-          updatedAt: browserState.updatedAt,
+          tabsCount: tabs.length,
+          updatedAt: browserTabsStore.updatedAt,
         })
       } catch (err) {
-        return sendJson(res, 400, { error: err.message })
+        return sendJson(res, 400, { ok: false, error: err.message })
       }
     }
 
+    // 1c. Chrome Extension Bridge: Read synced browser tabs
     if (pathname === "/api/browser/tabs" && req.method === "GET") {
-      return sendJson(res, 200, browserState)
+      loadPersistedTabs()
+      return sendJson(res, 200, browserTabsStore)
     }
 
+    // 2. Live models.opencode.ai / models.dev proxy (mirrors OpenCode ModelsDev.refresh)
     if (pathname === "/api/models-dev" && req.method === "GET") {
-      try {
-        const upstream = await fetch("https://models.dev/api/v2/catalog.json", {
-          headers: { "User-Agent": "opencode/stable/2.3.0/opencode" },
-        })
-        if (upstream.ok) {
-          const data = await upstream.json()
-          return sendJson(res, 200, data)
-        }
-      } catch {}
-      return sendJson(res, 200, {})
+      const urls = [
+        "https://models.opencode.ai/experimental/v2.0/api.json?type=chat,decision,image,video",
+        "https://models.dev/api.json",
+      ]
+      for (const catalogUrl of urls) {
+        try {
+          const response = await fetch(catalogUrl, {
+            headers: { "User-Agent": "opencode/stable/2.4.0/opencode" },
+            signal: AbortSignal.timeout(8000),
+          })
+          if (response.ok) {
+            const data = await response.json()
+            return sendJson(res, 200, data)
+          }
+        } catch {}
+      }
+      return sendJson(res, 200, { offline: true })
     }
 
+    // 3. OpenCode Free / AI Inference Proxy (supports SSE stream + JSON)
     if (pathname === "/api/ai/proxy" && req.method === "POST") {
       try {
-        const { url, headers, body } = await readJsonBody(req)
+        const reqBody = await readBody(req)
+        const { url, headers = {} } = reqBody
+        const payload = reqBody.payload || reqBody.body
+        if (!url || typeof url !== "string") {
+          return sendJson(res, 400, { error: "Missing target url" })
+        }
         const upstream = await fetch(url, {
           method: "POST",
-          headers: headers || { "Content-Type": "application/json" },
-          body: JSON.stringify(body || {}),
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream, application/json",
+            ...headers,
+          },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(30000),
         })
         const text = await upstream.text()
-        try {
-          const json = JSON.parse(text)
-          return sendJson(res, upstream.status, json)
-        } catch {
-          return sendJson(res, 200, { __proxyError: true, status: upstream.status, body: text.slice(0, 500) })
-        }
+        const parsed = parseUpstreamResponse(text)
+        return sendJson(res, upstream.status, parsed)
       } catch (err) {
-        return sendJson(res, 200, { __proxyError: true, message: err.message })
+        return sendJson(res, 502, { error: err.message || "Upstream request failed" })
       }
     }
 
+    // 4. Local Shell Execution (OpenCode bash tool backend for Windows/Linux/Android Termux)
     if (pathname === "/api/shell" && req.method === "POST") {
       try {
-        const { command } = await readJsonBody(req)
-        if (!command || typeof command !== "string") {
-          return sendJson(res, 400, { error: "Missing command" })
+        const body = await readBody(req)
+        const command = String(body.command || "")
+        if (!command.trim()) {
+          return sendJson(res, 400, { output: "Empty command" })
         }
         exec(
           command,
-          { cwd: ROOT_DIR, timeout: 15000, maxBuffer: 2 * 1024 * 1024 },
+          {
+            cwd: process.cwd(),
+            timeout: Math.min(Number(body.timeout) || 25000, 60000),
+            maxBuffer: 2 * 1024 * 1024,
+          },
           (error, stdout, stderr) => {
-            sendJson(res, 200, {
-              stdout: stdout || "",
-              stderr: stderr || "",
-              exitCode: error ? error.code || 1 : 0,
-            })
+            const combined = [
+              `$ ${command}`,
+              stdout ? stdout.trimEnd() : "",
+              stderr ? `[stderr]\n${stderr.trimEnd()}` : "",
+              error ? `[exit code: ${error.code ?? 1}]` : "[exit code: 0]",
+            ]
+              .filter(Boolean)
+              .join("\n")
+            return sendJson(res, 200, { output: combined })
           },
         )
         return
       } catch (err) {
-        return sendJson(res, 500, { error: err.message })
+        return sendJson(res, 500, { output: `Shell error: ${err.message}` })
       }
     }
 
-    if (pathname === "/api/webfetch" && req.method === "GET") {
-      const targetUrl = urlObj.searchParams.get("url")
-      if (!targetUrl) return sendJson(res, 400, { error: "Missing url" })
+    // 5. WebFetch Proxy (OpenCode webfetch tool)
+    if (pathname === "/api/webfetch" && (req.method === "POST" || req.method === "GET")) {
       try {
-        const r = await fetch(targetUrl)
-        const text = await r.text()
-        return sendJson(res, 200, { url: targetUrl, content: text.slice(0, 20000) })
+        const body = req.method === "POST" ? await readBody(req) : {}
+        const targetUrl = String(body.url || urlObj.searchParams.get("url") || "")
+        const resp = await fetch(targetUrl, {
+          headers: { "User-Agent": "opencode/stable/2.4.0" },
+          signal: AbortSignal.timeout(12000),
+        })
+        const content = await resp.text()
+        return sendJson(res, 200, { status: resp.status, content: content.slice(0, 50000) })
       } catch (err) {
-        return sendJson(res, 200, { url: targetUrl, content: `Fetch error: ${err.message}` })
+        return sendJson(res, 200, { status: 500, content: `WebFetch error: ${err.message}` })
       }
     }
 
+    // 6. Workspace File Export to host disk
     if (pathname === "/api/fs/write" && req.method === "POST") {
       try {
-        const { path: relPath, content } = await readJsonBody(req)
-        return sendJson(res, 200, { ok: true, path: relPath, size: (content || "").length })
+        const body = await readBody(req)
+        const exportDir = path.resolve(process.cwd(), "workspace-out")
+        const target = path.resolve(exportDir, String(body.path || "output.txt").replace(/^(\.\.[/\\])+/, ""))
+        if (!target.startsWith(exportDir)) {
+          return sendJson(res, 403, { error: "Forbidden path" })
+        }
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        fs.writeFileSync(target, String(body.content ?? ""), "utf-8")
+        return sendJson(res, 200, { ok: true, savedTo: target })
       } catch (err) {
         return sendJson(res, 500, { error: err.message })
       }
     }
 
-    // Serve static files from dist/
+    // Serve static files from dist/ with no-store cache control so updates apply immediately
     let filePath = path.join(DIST_DIR, pathname === "/" ? "index.html" : pathname)
     if (!filePath.startsWith(DIST_DIR)) {
       res.writeHead(403)
@@ -195,12 +362,19 @@ function createServer(port = PORT, host = HOST) {
       const ext = path.extname(filePath).toLowerCase()
       res.writeHead(200, {
         "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        Pragma: "no-cache",
+        Expires: "0",
       })
       fs.createReadStream(filePath).pipe(res)
     } else {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" })
       res.end("ZiCode build not found. Run npm run build first.")
     }
+  })
+
+  server.on("error", (err) => {
+    console.error(`ZiCode server error on ${host}:${port}:`, err.message)
   })
 
   server.listen(port, host, () => {
