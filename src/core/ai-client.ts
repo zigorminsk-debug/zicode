@@ -503,15 +503,46 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     .slice(0, 40)
     .join(", ")
 
+  const promptWords = userPrompt
+    .toLowerCase()
+    .replace(/[^a-zа-яё0-9\s.@-]/gi, " ")
+    .split(/\s+/)
+    .filter(
+      (w) =>
+        w.length >= 3 &&
+        !/^(прочитай|вкладку|вкладка|страницу|страница|браузере|браузер|открыта|открытые|сейчас|какие|меня|видишь|мой|что|как|для|или|это|все|пяти|пять|последних|последние|обзор|сделай|мне|ответь|напиши|имени|моего)$/i.test(
+          w,
+        ),
+    )
+
+  const matchedTabsByWord = freshBrowserTabs.filter((t) => {
+    const hay = `${t.title} ${t.url}`.toLowerCase()
+    return promptWords.some((w) => w.length >= 4 && hay.includes(w))
+  })
+
+  const isEmailOrChatQuery =
+    /(письм|почт|ящик|отправител|получател|входящ|kerio|gmail|yandex|яндекс|mail|outlook|ответь|ответить|перепис|напиши\s+ответ|напиши\s+письмо|отправь\s+письмо|от\s+моего\s+имени|заголовк|тема\s+письма|сообщен|email|inbox|reply)/i.test(
+      userPrompt,
+    )
+
+  const isReplyDirective =
+    /(ответь|ответить|напиши\s+ответ|напиши\s+ем[уа]|напиши\s+отправител|переписыва|от\s+моего\s+имени|отправь\s+ответ|отправь\s+письмо|напиши\s+письмо)/i.test(
+      userPrompt,
+    )
+
+  const shouldAutoSend = /(отправь|отошли|вышли|сразу\s+отправ)/i.test(userPrompt) && !/(не\s+отправляй|черновик)/i.test(userPrompt)
+
   const isBrowserQuery =
-    /(браузер|вкладк|страниц|открыт|хром|chrome|сайт|видишь|видит|прочитай|о чем|о чём|разбери|таблиц|browser|tab|page|url)/i.test(
+    isEmailOrChatQuery ||
+    matchedTabsByWord.length > 0 ||
+    /(браузер|вкладк|страниц|открыт|хром|chrome|сайт|видишь|видит|прочитай|читай|о чем|о чём|разбери|таблиц|информаци|1с|1c|белвэб|автозапчаст|opel|dashboard|ipecs|диск|browser|tab|page|url)/i.test(
       userPrompt,
     )
 
   let preExecutedBrowserContext = ""
 
-  // If the user asks anything about their browser/tabs/pages, automatically execute `browser_tabs` tool FIRST
-  if (isBrowserQuery) {
+  // If the user asks anything about their browser/tabs/emails/pages, automatically execute `browser_tabs` tool FIRST
+  if (isBrowserQuery && freshBrowserTabs.length > 0) {
     const recordList: ToolCallRecord = {
       id: `tc-browser-list-${Date.now()}`,
       name: "browser_tabs",
@@ -521,7 +552,7 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     toolCalls.push(recordList)
     onUpdate({
       content: "",
-      reasoning: `[${model.name}] Чтение открытых вкладок Google Chrome через расширение ZiCode Chrome Bridge...`,
+      reasoning: `[${model.name}] Чтение открытых вкладок, писем и всех фреймов Google Chrome через ZiCode Chrome Bridge v2.5...`,
       toolCalls: [...toolCalls],
     })
     const startedList = Date.now()
@@ -531,34 +562,46 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
     recordList.durationMs = Date.now() - startedList
     preExecutedBrowserContext += `\n\n=== РЕЗУЛЬТАТ ИНСТРУМЕНТА browser_tabs({"action":"list"}) ===\n${resList.output}`
 
-    // Also read active tab or matching tab by keyword
-    const matchedTab = freshBrowserTabs.find((t) => {
-      const words = userPrompt
-        .toLowerCase()
-        .replace(/[^a-zа-яё0-9\s.-]/gi, " ")
-        .split(/\s+/)
-        .filter((w) => w.length >= 4 && !/^(прочитай|вкладку|вкладка|страницу|страница|браузере|браузер|открыта|открытые|сейчас|какие|меня|видишь|мой)$/i.test(w))
-      return words.some((w) => t.title.toLowerCase().includes(w) || t.url.toLowerCase().includes(w))
-    })
-
-    const readArgs = matchedTab ? { action: "read_tab", query: matchedTab.title.slice(0, 35) } : { action: "read_active" }
-    const recordRead: ToolCallRecord = {
-      id: `tc-browser-read-${Date.now()}`,
-      name: "browser_tabs",
-      args: readArgs,
-      status: "running",
+    // Collect target tabs to read deeply (mail tabs like Kerio Connect + keyword-matched tabs + active tab)
+    const tabsToRead: BrowserTabItem[] = []
+    if (isEmailOrChatQuery) {
+      for (const t of freshBrowserTabs) {
+        if (/(kerio|mail|почт|письм|входящ|inbox|roundcube|outlook|gmail|yandex|telegram|whatsapp)/i.test(`${t.title} ${t.url}`)) {
+          tabsToRead.push(t)
+        }
+      }
     }
-    toolCalls.push(recordRead)
-    const startedRead = Date.now()
-    const resRead = await executeToolCall("browser_tabs", readArgs, wrappedCtx)
-    recordRead.status = resRead.isError ? "error" : "completed"
-    recordRead.output = resRead.output
-    recordRead.durationMs = Date.now() - startedRead
-    preExecutedBrowserContext += `\n\n=== РЕЗУЛЬТАТ ИНСТРУМЕНТА browser_tabs(${JSON.stringify(readArgs)}) ===\n${resRead.output}`
+    for (const t of matchedTabsByWord) {
+      if (!tabsToRead.some((x) => x.id === t.id)) tabsToRead.push(t)
+    }
+    const activeNonZicode =
+      freshBrowserTabs.find((t) => t.active && !t.title.includes("ZiCode")) ||
+      freshBrowserTabs.find((t) => !t.title.includes("ZiCode") && (t.content || "").length > 0) ||
+      freshBrowserTabs[0]
+    if (activeNonZicode && !tabsToRead.some((x) => x.id === activeNonZicode.id)) {
+      tabsToRead.push(activeNonZicode)
+    }
+
+    for (const tab of tabsToRead.slice(0, 4)) {
+      const readArgs = { action: "read_tab", tabId: tab.id, query: tab.title.slice(0, 40) }
+      const recordRead: ToolCallRecord = {
+        id: `tc-browser-read-${tab.id}-${Date.now()}`,
+        name: "browser_tabs",
+        args: readArgs,
+        status: "running",
+      }
+      toolCalls.push(recordRead)
+      const startedRead = Date.now()
+      const resRead = await executeToolCall("browser_tabs", readArgs, wrappedCtx)
+      recordRead.status = resRead.isError ? "error" : "completed"
+      recordRead.output = resRead.output
+      recordRead.durationMs = Date.now() - startedRead
+      preExecutedBrowserContext += `\n\n=== РЕЗУЛЬТАТ ИНСТРУМЕНТА browser_tabs(${JSON.stringify(readArgs)}) ===\n${resRead.output}`
+    }
 
     onUpdate({
       content: "",
-      reasoning: `[${model.name}] Получены данные о ${freshBrowserTabs.length} открытых вкладках Chrome. Формирую ответ...`,
+      reasoning: `[${model.name}] Извлечены данные, заголовки писем и содержимое фреймов из ${tabsToRead.length} вкладок Chrome. Анализирую...`,
       toolCalls: [...toolCalls],
     })
   }
@@ -566,27 +609,39 @@ export async function runAgentTurn(input: RunAgentTurnInput): Promise<RunAgentTu
   const openTabsSummary =
     freshBrowserTabs && freshBrowserTabs.length > 0
       ? freshBrowserTabs
-          .slice(0, 25)
-          .map((t, idx) => `${idx + 1}. [${t.active ? "АКТИВНАЯ ВКЛАДКА" : "ВКЛАДКА"}] "${t.title}" — ${t.url}${t.content ? ` (${t.content.length} симв. текста)` : ""}`)
+          .slice(0, 30)
+          .map(
+            (t, idx) =>
+              `${idx + 1}. [id=${t.id}] [${t.active ? "АКТИВНАЯ ВКЛАДКА" : "ВКЛАДКА"}] "${t.title}" — ${t.url}${
+                t.content ? ` (${t.content.length} симв. текста)` : ""
+              }`,
+          )
           .join("\n")
       : "Вкладки ещё не синхронизированы (установите расширение ZiCode Chrome Bridge)"
 
   const systemMessage = `${agent.systemPrompt}
 
-ВАЖНАЯ ИНСТРУКЦИЯ ПО ДОСТУПУ К БРАУЗЕРУ (ZiCode Chrome Bridge):
-У тебя ЕСТЬ прямой доступ в реальном времени к браузеру Google Chrome пользователя через подключённое расширение ZiCode Chrome Bridge!
-Сейчас в браузере пользователя реально открыто вкладок: ${freshBrowserTabs.length}.
-Список открытых вкладок пользователя прямо сейчас:
+ВАЖНАЯ ИНСТРУКЦИЯ ПО ДОСТУПУ К БРАУЗЕРУ, ПОЧТЕ (KERIO CONNECT / WEBMAIL) И ПЕРЕПИСКЕ ОТ ИМЕНИ ПОЛЬЗОВАТЕЛЯ (ZiCode Chrome Bridge v2.5):
+1. У тебя ЕСТЬ полный прямой доступ в реальном времени ко всем открытым вкладкам браузера Google Chrome пользователя (включая все вложенные фреймы \`<iframe>\`, списки писем в Kerio Connect / Gmail / Yandex / Outlook, открытые письма, таблицы 1С / БелВЭБ / CRM).
+2. Сейчас в браузере пользователя открыто вкладок: ${freshBrowserTabs.length}.
+Список открытых вкладок:
 ${openTabsSummary}
-
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «Я не имею прямого доступа к вашему браузеру» или «Я не могу видеть открытые вкладки»! Ты УЖЕ видишь все открытые вкладки и текст страниц выше. Всегда отвечай конкретно по этим вкладкам и их содержимому.
+3. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать:
+   - «Я не имею прямого доступа к вашему браузеру»
+   - «К сожалению, я не могу напрямую получить заголовки писем»
+   - «Пожалуйста, скопируйте заголовки писем и пришлите их сюда»
+   Все заголовки писем, строки списка входящих и полный текст открытых писем УЖЕ извлечены расширением ZiCode Chrome Bridge и переданы тебе ниже! Сразу делай обзор всех найденных писем, тем, отправителей и текста!
+4. ПЕРЕПИСКА ОТ ИМЕНИ ПОЛЬЗОВАТЕЛЯ:
+   Если пользователь просит ответить определённому отправителю, написать письмо или вести переписку от его имени:
+   - Вызови инструмент \`browser_tabs\` с \`action: "reply_email"\` (или \`"compose_email"\`), передав \`senderQuery\` (имя/email отправителя или тему письма), \`messageBody\` (готовый вежливый текст ответа от имени пользователя) и \`autoSend\` (\`true\`, если пользователь попросил сразу отправить, или \`false\`, чтобы вставить текст в открытое окно ответа).
+   - И обязательно приведи полный составленный текст ответа в своём сообщении!
 
 Workspace files: [${workspaceSummary}]
 Current Agent: ${agent.name} (${agent.id})
 Active Model: ${model.name} (${provider.id}/${model.id})`
 
   const effectiveUserPrompt = preExecutedBrowserContext
-    ? `${userPrompt}\n\n[СИСТЕМНЫЕ ДАННЫЕ ZICODE CHROME BRIDGE — ПРЯМОЙ ДОСТУП К БРАУЗЕРУ ПОЛЬЗОВАТЕЛЯ АКТИВЕН! Вот реальные открытые вкладки и содержимое страниц пользователя прямо сейчас:]${preExecutedBrowserContext}\n\n[ИНСТРУКЦИЯ: Ответь пользователю на основе этих реальных открытых вкладок его браузера. Никогда не говори, что у тебя нет доступа к браузеру!]`
+    ? `${userPrompt}\n\n[СИСТЕМНЫЕ ДАННЫЕ ZICODE CHROME BRIDGE v2.5 — ПРЯМОЙ ДОСТУП К ВКЛАДКАМ, ПОЧТЕ KERIO CONNECT И ФРЕЙМАМ АКТИВЕН! Ниже приведены реальные извлечённые списки писем, заголовки, таблицы и полный текст со всех фреймов открытых вкладок пользователя:]${preExecutedBrowserContext}\n\n[КРИТИЧЕСКАЯ ИНСТРУКЦИЯ: Ответь пользователю напрямую по этим данным! Никогда не проси пользователя копировать заголовки писем вручную — используй все строки писем, отправителей, темы и содержимое писем из блока выше! Если пользователь просит ответить отправителю или написать сообщение от его имени — сформируй готовый текст ответа от имени пользователя (обрамив его в блок \`\`\`email ... \`\`\` или вызвав browser_tabs с action="reply_email"), чтобы он сразу подставился в почтовый клиент!]`
     : userPrompt
 
   const apiMessages: any[] = [
@@ -764,14 +819,80 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
       })
     }
 
-    // Zero-Refusal Safeguard: if Chrome tabs ARE synced, never allow any model to claim it lacks browser access
+    // Automatic Reply / Correspondence Execution on User's Behalf:
+    // If the user instructed the agent to reply/write to a sender and the LLM drafted a reply in finalContent without invoking reply_email itself,
+    // automatically execute browser_tabs({ action: "reply_email", ... }) to fill (and optionally send) the reply in Kerio Connect / Webmail!
+    const alreadyRanReplyTool = toolCalls.some(
+      (tc) => tc.name === "browser_tabs" && (tc.args?.action === "reply_email" || tc.args?.action === "compose_email"),
+    )
+    if (isReplyDirective && freshBrowserTabs.length > 0 && !alreadyRanReplyTool && finalContent.trim()) {
+      const fencedMatch = finalContent.match(/```(?:email|text|markdown)?\s*\n([\s\S]*?)```/i)
+      const draftedBody = fencedMatch
+        ? fencedMatch[1].trim()
+        : finalContent
+            .replace(/^#+\s+.*$/gm, "")
+            .trim()
+            .slice(0, 3000)
+
+      // Extract sender hint if mentioned (e.g. "отправителю X", "письмо от X", email address)
+      const emailAddrMatch = userPrompt.match(/([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/)
+      const senderMatch =
+        userPrompt.match(/(?:отправител[юя]|от\s+имени|адресат[уа]|клиент[уа]|коллег[еи]|пользователь)\s+[«"']?([А-ЯЁа-яёA-Za-z0-9_.@-]{3,40})[»"']?/i)
+      const senderHint = emailAddrMatch?.[1] || senderMatch?.[1] || ""
+
+      const replyArgs = {
+        action: "reply_email",
+        query: "Kerio",
+        senderQuery: senderHint,
+        recipient: emailAddrMatch?.[1] || undefined,
+        messageBody: draftedBody,
+        autoSend: shouldAutoSend,
+      }
+      const recordReply: ToolCallRecord = {
+        id: `tc-browser-reply-${Date.now()}`,
+        name: "browser_tabs",
+        args: replyArgs,
+        status: "running",
+      }
+      toolCalls.push(recordReply)
+      onUpdate({
+        content: finalContent,
+        reasoning: finalReasoning,
+        toolCalls: [...toolCalls],
+        question: latestQuestion,
+        artifact: latestArtifact,
+      })
+
+      const startedReply = Date.now()
+      const resReply = await executeToolCall("browser_tabs", replyArgs, wrappedCtx)
+      recordReply.status = resReply.isError ? "error" : "completed"
+      recordReply.output = resReply.output
+      recordReply.durationMs = Date.now() - startedReply
+
+      finalContent +=
+        `\n\n---\n### ✉️ Автоматическое действие в почтовом клиенте (ZiCode Chrome Bridge):\n` +
+        `${resReply.output.slice(0, 1200)}`
+
+      onUpdate({
+        content: finalContent,
+        reasoning: finalReasoning,
+        toolCalls: [...toolCalls],
+        question: latestQuestion,
+        artifact: latestArtifact,
+      })
+    }
+
+    // Zero-Refusal Safeguard: if Chrome tabs ARE synced, never allow any model to claim it lacks browser or email access
     const hasRefusalPhrase =
-      /(не имею прямого доступа|не могу\s*[«"]?видеть|нет доступа к вашему браузеру|не вижу ваш браузер|do not have direct access|cannot see your browser)/i.test(
+      /(не имею прямого доступа|не могу\s*[«"]?видеть|нет доступа к вашему браузеру|не вижу ваш браузер|не могу напрямую получить заголовки писем|скопируйте заголовки писем|пришлите их сюда|do not have direct access|cannot see your browser)/i.test(
         finalContent,
       )
 
     if (freshBrowserTabs.length > 0 && (hasRefusalPhrase || (isBrowserQuery && !finalContent.trim()))) {
-      const activeTab = freshBrowserTabs.find((t) => t.active) || freshBrowserTabs[0]
+      const mailTab = freshBrowserTabs.find((t) =>
+        /(kerio|mail|почт|письм|входящ|inbox|roundcube|outlook|gmail|yandex)/i.test(`${t.title} ${t.url}`),
+      )
+      const targetTab = (isEmailOrChatQuery && mailTab) || matchedTabsByWord[0] || freshBrowserTabs.find((t) => t.active) || freshBrowserTabs[0]
       const tabsBulletList = freshBrowserTabs
         .map(
           (t, i) =>
@@ -782,20 +903,12 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
         .join("\n")
 
       finalContent =
-        `Да, **я вижу ваш браузер Google Chrome в реальном времени** через подключённое расширение **ZiCode Chrome Bridge**!\n\n` +
-        `Сейчас у вас открыто **${freshBrowserTabs.length} вкладок**:\n${tabsBulletList}\n\n` +
-        (activeTab
-          ? `### 📄 Текущая активная вкладка: **${activeTab.title}**\n- **URL:** \`${activeTab.url}\`\n` +
-            (activeTab.headings && activeTab.headings.length > 0
-              ? `- **Заголовки на странице:** ${activeTab.headings.slice(0, 8).join(" · ")}\n`
-              : "") +
-            (activeTab.content
-              ? `\n**Фрагмент содержимого страницы:**\n> ${activeTab.content.slice(0, 1200).replace(/\n+/g, "\n> ")}${
-                  activeTab.content.length > 1200 ? "…" : ""
-                }\n`
-              : "")
-          : "") +
-        `\nНапишите, какую именно из этих ${freshBrowserTabs.length} вкладок разобрать подробнее, извлечь из неё данные, таблицы или код!`
+        `### 🌐 Данные из открытой вкладки «${targetTab?.title || "Браузер Chrome"}» (через ZiCode Chrome Bridge v2.5)\n\n` +
+        (targetTab?.content
+          ? `#### 📬 Извлечённые письма, заголовки и содержимое всех фреймов вкладки:\n\`\`\`text\n${targetTab.content.slice(0, 8000)}\n\`\`\`\n\n`
+          : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.5.0** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
+        `#### Список всех открытых вкладок (${freshBrowserTabs.length}):\n${tabsBulletList}\n\n` +
+        `💡 Вы также можете написать: *«Ответь от моего имени отправителю [Имя]: [текст ответа]»* — и агент сам нажмёт «Ответить» во вкладке почты и введёт/отправит сообщение!`
 
       onUpdate({
         content: finalContent,

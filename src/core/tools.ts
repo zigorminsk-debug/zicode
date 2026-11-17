@@ -315,22 +315,54 @@ export const OPENCODE_TOOL_SCHEMAS = [
     function: {
       name: "browser_tabs",
       description:
-        "Read the user's open Chrome browser tabs and page contents via the ZiCode Chrome Extension (list all open tabs, read active tab, read specific tab by ID/query, or search across open tabs).",
+        "Read any information/emails/tables from the user's open Chrome browser tabs (including Kerio Connect, Gmail, Yandex Mail, Outlook, 1C, CRM, dashboards) across all frames/iframes, open specific emails, or reply/correspond with a sender on the user's behalf.",
       parameters: {
         type: "object",
         properties: {
           action: {
             type: "string",
-            enum: ["list", "read_active", "read_tab", "search"],
-            description: "Action to perform on open Chrome browser tabs",
+            enum: [
+              "list",
+              "read_active",
+              "read_tab",
+              "read_all",
+              "search",
+              "open_email",
+              "reply_email",
+              "compose_email",
+              "click",
+            ],
+            description:
+              "list=list tabs; read_active=read active + mail tabs; read_tab=read specific tab by query/tabId; read_all=read all open tabs; open_email=click/open an email row by senderQuery/query; reply_email=reply to a sender on user's behalf; compose_email=write new email",
           },
           query: {
             type: "string",
-            description: "Optional tab title, URL substring, or search keyword",
+            description: "Tab title, URL substring, or keyword (e.g. 'Kerio', 'почта', '1С', 'БелВЭБ')",
           },
           tabId: {
             type: "number",
-            description: "Optional tab ID to read",
+            description: "Optional tab ID",
+          },
+          senderQuery: {
+            type: "string",
+            description: "Sender name, email address, or email subject to open or reply to",
+          },
+          recipient: {
+            type: "string",
+            description: "Recipient email address (To / Кому) when composing or replying",
+          },
+          subject: {
+            type: "string",
+            description: "Email subject (Тема) when composing or replying",
+          },
+          messageBody: {
+            type: "string",
+            description: "Full text of the reply/email/message to write on the user's behalf",
+          },
+          autoSend: {
+            type: "boolean",
+            description:
+              "true = automatically click the Send («Отправить») button after filling the reply; false = fill the composer window and leave open for user review",
           },
         },
         required: ["action"],
@@ -762,15 +794,70 @@ export async function executeToolCall(
       }
 
       const action = String(args.action ?? "list")
+
+      // Interactive DOM actions (open email, click row, reply to sender, compose email on user's behalf)
+      if (action === "open_email" || action === "click" || action === "reply_email" || action === "compose_email") {
+        try {
+          const actRes = await fetch("/api/browser/action", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              actionType: action,
+              query: args.query,
+              tabId: args.tabId,
+              senderQuery: args.senderQuery || args.query,
+              targetText: args.senderQuery || args.query,
+              recipient: args.recipient,
+              subject: args.subject,
+              messageBody: args.messageBody,
+              autoSend: Boolean(args.autoSend),
+            }),
+          })
+          if (actRes.ok) {
+            const actData = await actRes.json()
+            if (Array.isArray(actData?.tabs) && actData.tabs.length > 0) {
+              tabs = actData.tabs
+            }
+            const r = actData?.result
+            if (r?.ok) {
+              const logsStr = Array.isArray(r.logs) && r.logs.length > 0 ? r.logs.join("\n- ") : "Действие выполнено"
+              const snapContent = r.snapshot?.content || ""
+              return {
+                output:
+                  `✅ Выполнено действие "${action}" во вкладке "${r.tabTitle}" (${r.tabUrl}):\n- ${logsStr}\n\n` +
+                  (snapContent
+                    ? `Обновлённое содержимое вкладки после действия:\n${snapContent.slice(0, 22000)}`
+                    : ""),
+              }
+            }
+          }
+        } catch {}
+      }
+
       if (action === "list") {
         const listStr = tabs
           .map(
             (t, idx) =>
-              `${idx + 1}. [id=${t.id}] ${t.active ? "★ (Активная) " : ""}${t.title} — ${t.url} (${(t.content || "").length} симв.)`,
+              `${idx + 1}. [id=${t.id}] ${t.active ? "★ (Активная) " : ""}${t.title} — ${t.url} (${(t.content || "").length} симв. текста${t.metaDescription ? ` · ${t.metaDescription}` : ""})`,
           )
           .join("\n")
         return {
           output: `Открытые вкладки в Google Chrome (${tabs.length}):\n${listStr}`,
+        }
+      }
+
+      if (action === "read_all") {
+        const richTabs = tabs.filter((t) => (t.content || "").trim().length > 0)
+        const out = richTabs
+          .map(
+            (t, idx) =>
+              `=== ВКЛАДКА #${idx + 1} [id=${t.id}]: ${t.title} (${t.url}) ===\n` +
+              (t.headings?.length ? `Заголовки: ${t.headings.slice(0, 15).join(" | ")}\n` : "") +
+              `${(t.content || "").slice(0, 9000)}`,
+          )
+          .join("\n\n========================================\n\n")
+        return {
+          output: out || `Открыто ${tabs.length} вкладок, но текстовое содержимое ещё не извлечено. Нажмите «🔄 Синхронизировать открытые вкладки сейчас» в расширении Chrome.`,
         }
       }
 
@@ -780,32 +867,51 @@ export async function executeToolCall(
           tabs.find((t) => !t.title.includes("ZiCode") && (t.content || "").length > 0) ||
           tabs.find((t) => t.active) ||
           tabs[0]
+        // Also include any mail/CRM tabs (Kerio Connect, Mail, 1C, BelVEB) so email questions always have mail context
+        const mailOrWorkTabs = tabs.filter(
+          (t) =>
+            t.id !== active?.id &&
+            /(kerio|mail|почт|письм|входящ|inbox|1c|1с|белвэб|dashboard|opel|автозапчаст|диск)/i.test(
+              `${t.title} ${t.url}`,
+            ) &&
+            (t.content || "").length > 0,
+        )
         if (!active) return { output: "Активная вкладка не найдена." }
-        return {
-          output:
-            `Активная вкладка Chrome:\nЗаголовок: ${active.title}\nURL: ${active.url}\n` +
-            (active.selection ? `Выделенный текст: ${active.selection}\n` : "") +
-            (active.headings?.length ? `Заголовки:\n${active.headings.join("\n")}\n\n` : "\n") +
-            `Текст страницы:\n${(active.content || "(нет текстового содержимого)").slice(0, 12000)}`,
+        let out =
+          `Активная вкладка Chrome:\nЗаголовок: ${active.title}\nURL: ${active.url}\n` +
+          (active.selection ? `Выделенный текст: ${active.selection}\n` : "") +
+          (active.headings?.length ? `Заголовки:\n${active.headings.join("\n")}\n\n` : "\n") +
+          `Текст страницы:\n${(active.content || "(нет текстового содержимого)").slice(0, 20000)}`
+
+        if (mailOrWorkTabs.length > 0) {
+          out +=
+            `\n\n=== ДОПОЛНИТЕЛЬНЫЕ РАБОЧИЕ / ПОЧТОВЫЕ ВКЛАДКИ (${mailOrWorkTabs.length}) ===\n` +
+            mailOrWorkTabs
+              .map(
+                (t) =>
+                  `--- Вкладка [${t.id}]: ${t.title} (${t.url}) ---\n${(t.content || "").slice(0, 15000)}`,
+              )
+              .join("\n\n")
         }
+        return { output: out }
       }
 
-      if (action === "read_tab" || action === "search") {
-        const q = String(args.query ?? "").toLowerCase()
+      if (action === "read_tab" || action === "search" || action === "open_email") {
+        const q = String(args.query || args.senderQuery || "").toLowerCase()
         const tid = args.tabId ? Number(args.tabId) : undefined
         const matched =
           tabs.find((t) => tid !== undefined && t.id === tid) ||
-          tabs.find(
-            (t) =>
-              t.title.toLowerCase().includes(q) ||
-              t.url.toLowerCase().includes(q) ||
-              (t.content || "").toLowerCase().includes(q),
-          ) ||
+          (q
+            ? tabs.find((t) => t.title.toLowerCase().includes(q) || t.url.toLowerCase().includes(q)) ||
+              tabs.find((t) => (t.content || "").toLowerCase().includes(q))
+            : undefined) ||
+          tabs.find((t) => /(kerio|mail|почт|письм|inbox)/i.test(`${t.title} ${t.url}`)) ||
           tabs[0]
         return {
           output:
-            `Вкладка Chrome [${matched.id}]: ${matched.title}\nURL: ${matched.url}\n\n` +
-            `Содержимое:\n${(matched.content || "").slice(0, 12000)}`,
+            `Вкладка Chrome [${matched.id}]: ${matched.title}\nURL: ${matched.url}\n` +
+            (matched.headings?.length ? `Заголовки: ${matched.headings.join(" | ")}\n\n` : "\n") +
+            `Содержимое всех фреймов и писем:\n${(matched.content || "(текст вкладки пуст — обновите расширение ZiCode Chrome Bridge до v2.5.0 и нажмите Синхронизировать)").slice(0, 30000)}`,
         }
       }
 

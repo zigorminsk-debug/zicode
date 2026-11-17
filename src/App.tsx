@@ -1489,7 +1489,7 @@ export function App() {
                     <code className="mono">ANDROID_KEYSTORE_BASE64</code>.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Android-v2.4.1-Signed-Release.apk"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Android-v2.5.0-Signed-Release.apk"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1530,7 +1530,7 @@ export function App() {
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Setup-2.4.1-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Setup-2.5.0-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1549,7 +1549,7 @@ export function App() {
                       <Download size={12} /> Скачать Setup .exe
                     </a>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Portable-2.4.1-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Portable-2.5.0-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1588,7 +1588,7 @@ export function App() {
                     Позволяет ZiCode видеть открытые вкладки вашего браузера и читать текст страниц в реальном времени.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Chrome-Extension-v2.4.1.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Chrome-Extension-v2.5.0.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -2123,7 +2123,7 @@ export function App() {
                 </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Chrome-Extension-v2.4.1.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Chrome-Extension-v2.5.0.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -2183,12 +2183,12 @@ export function App() {
                   <li>
                     Скачайте архив{" "}
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Chrome-Extension-v2.4.1.zip"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.5.0/ZiCode-Chrome-Extension-v2.5.0.zip"
                       target="_blank"
                       rel="noreferrer"
                       style={{ color: "var(--accent)" }}
                     >
-                      ZiCode-Chrome-Extension-v2.4.1.zip
+                      ZiCode-Chrome-Extension-v2.5.0.zip
                     </a>{" "}
                     и распакуйте его в любую папку на компьютере (или используйте папку <code>chrome-extension/</code> из
                     репозитория).
@@ -2264,28 +2264,50 @@ export function App() {
                           )}
                           {t.title || "Без заголовка"}
                         </div>
-                        <button
-                          onClick={() => {
-                            setCenterTab("chat")
-                            handleSendMessage(
-                              `Прочитай открытую вкладку браузера "${t.title}" (${t.url}) и сделай подробный разбор её содержимого.`,
-                            )
-                          }}
-                          style={{
-                            padding: "5px 10px",
-                            borderRadius: "6px",
-                            background: "var(--accent)",
-                            color: "#0a0c10",
-                            fontWeight: 700,
-                            fontSize: "11px",
-                            flexShrink: 0,
-                          }}
-                        >
-                          Спросить ИИ по этой странице
-                        </button>
+                        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", flexShrink: 0 }}>
+                          <button
+                            onClick={() => {
+                              setCenterTab("chat")
+                              handleSubmitPrompt(
+                                `Прочитай открытую вкладку браузера "${t.title}" (${t.url}), извлеки все заголовки писем, сообщения, таблицы и сделай подробный разбор её содержимого.`,
+                              )
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              borderRadius: "6px",
+                              background: "var(--accent)",
+                              color: "#0a0c10",
+                              fontWeight: 700,
+                              fontSize: "11px",
+                              cursor: "pointer",
+                            }}
+                          >
+                            📬 Прочитать письма / данные вкладки
+                          </button>
+                          <button
+                            onClick={() => {
+                              setCenterTab("chat")
+                              setPromptInput(
+                                `Во вкладке "${t.title}" ответь от моего имени отправителю [укажите имя или тему]: `,
+                              )
+                            }}
+                            style={{
+                              padding: "5px 10px",
+                              borderRadius: "6px",
+                              background: "var(--bg-elevated)",
+                              color: "var(--text-primary)",
+                              border: "1px solid var(--border-color)",
+                              fontWeight: 600,
+                              fontSize: "11px",
+                              cursor: "pointer",
+                            }}
+                          >
+                            ✉️ Ответить от моего имени
+                          </button>
+                        </div>
                       </div>
                       <div className="mono" style={{ fontSize: "11px", color: "var(--accent-secondary)", marginBottom: "6px" }}>
-                        {t.url}
+                        {t.url} · {(t.content || "").length} симв. извлечено
                       </div>
                       {t.content && (
                         <div
@@ -2295,13 +2317,13 @@ export function App() {
                             background: "var(--bg-primary)",
                             fontSize: "11px",
                             color: "var(--text-secondary)",
-                            maxHeight: "120px",
+                            maxHeight: "180px",
                             overflowY: "auto",
                             whiteSpace: "pre-wrap",
                           }}
                         >
-                          {t.content.slice(0, 800)}
-                          {t.content.length > 800 ? "…" : ""}
+                          {t.content.slice(0, 2000)}
+                          {t.content.length > 2000 ? "…" : ""}
                         </div>
                       )}
                     </div>

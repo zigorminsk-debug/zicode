@@ -16,6 +16,10 @@ let browserTabsStore = {
   tabs: [],
 }
 
+// Bidirectional browser command queue for reading emails, clicking rows, and replying/composing on user's behalf
+const pendingBrowserActions = []
+const completedBrowserActions = new Map()
+
 function loadPersistedTabs() {
   try {
     if (fs.existsSync(TABS_CACHE_FILE)) {
@@ -208,7 +212,7 @@ function createServer(port = PORT, host = HOST) {
       })
     }
 
-    // 1b. Chrome Extension Bridge: Receive open tabs & active page DOM content
+    // 1b. Chrome Extension Bridge: Receive open tabs & active page DOM content + return pending actions
     if (pathname === "/api/browser/sync" && req.method === "POST") {
       try {
         const body = await readBody(req)
@@ -219,10 +223,12 @@ function createServer(port = PORT, host = HOST) {
           tabs,
         }
         savePersistedTabs(browserTabsStore)
+        const actionsToRun = pendingBrowserActions.splice(0, pendingBrowserActions.length)
         return sendJson(res, 200, {
           ok: true,
           tabsCount: tabs.length,
           updatedAt: browserTabsStore.updatedAt,
+          pendingActions: actionsToRun,
         })
       } catch (err) {
         return sendJson(res, 400, { ok: false, error: err.message })
@@ -233,6 +239,73 @@ function createServer(port = PORT, host = HOST) {
     if (pathname === "/api/browser/tabs" && req.method === "GET") {
       loadPersistedTabs()
       return sendJson(res, 200, browserTabsStore)
+    }
+
+    // 1d. Chrome Extension Bridge: Poll pending browser actions
+    if (pathname === "/api/browser/actions/pending" && req.method === "GET") {
+      const actionsToRun = pendingBrowserActions.splice(0, pendingBrowserActions.length)
+      return sendJson(res, 200, { ok: true, pendingActions: actionsToRun })
+    }
+
+    // 1e. Chrome Extension Bridge: Report completed browser action result
+    if (pathname === "/api/browser/action-result" && req.method === "POST") {
+      try {
+        const body = await readBody(req)
+        if (body && body.actionId) {
+          completedBrowserActions.set(body.actionId, body)
+        }
+        if (Array.isArray(body?.tabs) && body.tabs.length > 0) {
+          browserTabsStore = {
+            updatedAt: Date.now(),
+            activeTab: body.tabs.find((t) => t.active) || body.tabs[0] || null,
+            tabs: body.tabs,
+          }
+          savePersistedTabs(browserTabsStore)
+        }
+        return sendJson(res, 200, { ok: true })
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message })
+      }
+    }
+
+    // 1f. Chrome Extension Bridge: Enqueue an interactive browser action (open email, reply, compose, click, read_deep) and wait for result
+    if (pathname === "/api/browser/action" && req.method === "POST") {
+      try {
+        const body = await readBody(req)
+        const actionId = `act_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+        const actionObj = {
+          actionId,
+          createdAt: Date.now(),
+          ...body,
+        }
+        pendingBrowserActions.push(actionObj)
+
+        // Wait up to 9 seconds for Chrome Extension to execute the action and post result
+        const startWait = Date.now()
+        while (Date.now() - startWait < 9000) {
+          if (completedBrowserActions.has(actionId)) {
+            const result = completedBrowserActions.get(actionId)
+            completedBrowserActions.delete(actionId)
+            return sendJson(res, 200, {
+              ok: true,
+              actionId,
+              result,
+              tabs: browserTabsStore.tabs,
+            })
+          }
+          await new Promise((r) => setTimeout(r, 220))
+        }
+
+        return sendJson(res, 200, {
+          ok: false,
+          timeout: true,
+          actionId,
+          message: "Действие отправлено в очередь расширения ZiCode Chrome Bridge (выполнится при следующем цикле синхронизации).",
+          tabs: browserTabsStore.tabs,
+        })
+      } catch (err) {
+        return sendJson(res, 400, { ok: false, error: err.message })
+      }
     }
 
     // 2. Live models.opencode.ai / models.dev proxy (mirrors OpenCode ModelsDev.refresh)
