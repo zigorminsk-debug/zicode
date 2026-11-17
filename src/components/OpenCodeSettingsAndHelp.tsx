@@ -997,7 +997,7 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
                     Статус: <b>Синхронизировано {browserTabs.length} открытых вкладок</b> через <code>http://127.0.0.1:4096/api/browser/sync</code>.
                   </p>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.1/ZiCode-Chrome-Extension-v2.7.1.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1013,7 +1013,7 @@ export const OpenCodeSettingsScreen: React.FC<OpenCodeSettingsModalProps> = ({
                       fontSize: "12px",
                     }}
                   >
-                    <Download size={14} /> Скачать ZiCode-Chrome-Extension-v2.7.0.zip
+                    <Download size={14} /> Скачать ZiCode-Chrome-Extension-v2.7.1.zip
                   </a>
                 </div>
               )}
@@ -2460,12 +2460,12 @@ export const HelpAndGuideView: React.FC<HelpAndGuideProps> = ({
           <li>
             Скачайте архив расширения{" "}
             <a
-              href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip"
+              href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.1/ZiCode-Chrome-Extension-v2.7.1.zip"
               target="_blank"
               rel="noreferrer"
               style={{ color: "var(--accent)" }}
             >
-              ZiCode-Chrome-Extension-v2.7.0.zip
+              ZiCode-Chrome-Extension-v2.7.1.zip
             </a>{" "}
             и распакуйте его в любую папку.
           </li>

@@ -345,12 +345,8 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
     setBusy(true)
     setStatus(`Загрузка файлов ${repo} (${br})...`)
     try {
-      let files: Record<string, string> = {}
-      if (snapshotInfo?.repo === `${repo}@${br}`) {
-        files = {}
-      }
       const snapshot = await fetchRepoSnapshot(token, repo, br)
-      files = snapshot.files
+      const files = snapshot.files
 
       setSnapshotInfo({ repo: `${repo}@${br}`, count: Object.keys(files).length })
       setStatus(
@@ -365,6 +361,30 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
         prompt: buildPrompt(id, repo, br),
         files,
       })
+    } catch (err: any) {
+      setStatus(`❌ Не удалось загрузить репозиторий: ${err?.message || "неизвестная ошибка"}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const justLoadFiles = async () => {
+    const repo = selected.trim()
+    if (!repo) {
+      setStatus("⚠️ Сначала выберите репозиторий из списка.")
+      return
+    }
+    const br = (branch || "main").trim()
+    setBusy(true)
+    setStatus(`Загрузка файлов ${repo} (${br}) в рабочую область...`)
+    try {
+      const snapshot = await fetchRepoSnapshot(token, repo, br)
+      const count = Object.keys(snapshot.files).length
+      setSnapshotInfo({ repo: `${repo}@${br}`, count })
+      localStorage.setItem(GH_REPO_KEY, repo)
+      localStorage.setItem(`${GH_REPO_KEY}_branch`, br)
+      setStatus(`✅ Загружено ${count} файлов из ${repo} (${br}). Можно работать в редакторе и в чате.`)
+      onRunTask({ repo, branch: br, action: "Загрузка файлов в рабочую область", prompt: "", files: snapshot.files })
     } catch (err: any) {
       setStatus(`❌ Не удалось загрузить репозиторий: ${err?.message || "неизвестная ошибка"}`)
     } finally {
@@ -811,8 +831,9 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
                         {busy ? "Загрузка…" : `▶ ${action === "extend" ? "Дописать код" : "Исправить код"}`}
                       </button>
                       <button
-                        onClick={() => onRunTask({ repo: selected, branch, action: actionTitle(action), prompt: "", files: {} })}
-                        title="Сначала загрузить репозиторий в рабочую область и открыть чат"
+                        onClick={justLoadFiles}
+                        title="Загрузить README и исходники репозитория в рабочую область, чтобы работать в редакторе и чате"
+                        disabled={busy}
                         style={{
                           padding: "8px 12px",
                           borderRadius: "7px",
@@ -823,7 +844,7 @@ export const GitHubReposHub: React.FC<GitHubReposHubProps> = ({
                           cursor: "pointer",
                         }}
                       >
-                        📂 Только загрузить файлы
+                        📂 Загрузить файлы в рабочую область
                       </button>
                     </div>
                   </div>

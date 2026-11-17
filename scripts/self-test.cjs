@@ -74,8 +74,8 @@ checkFile("chrome-extension/background.js")
 checkFile("chrome-extension/content.js")
 checkFile("chrome-extension/popup.html")
 checkFile("chrome-extension/popup.js")
-checkFile("public/ZiCode-Chrome-Extension-v2.7.0.zip")
-console.log("✓ Verified Manifest V3 Chrome Extension (chrome-extension/ & ZiCode-Chrome-Extension-v2.7.0.zip)")
+checkFile("public/ZiCode-Chrome-Extension-v2.7.1.zip")
+console.log("✓ Verified Manifest V3 Chrome Extension (chrome-extension/ & ZiCode-Chrome-Extension-v2.7.1.zip)")
 
 // 4. Verify Agents & Slash commands
 const agentsSrc = checkFile("src/core/agents.ts").toString("utf-8")

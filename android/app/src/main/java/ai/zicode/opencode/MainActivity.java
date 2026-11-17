@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
         webView.addJavascriptInterface(new ZiCodeBridge(), "ZiCodeNativeBridge");
 
         setContentView(webView);
-        webView.loadUrl("file:///android_asset/www/index.html?v=270");
+        webView.loadUrl("file:///android_asset/www/index.html?v=271");
     }
 
     @Override

@@ -1154,7 +1154,7 @@ ${openTabsSummary}
         `### 🌐 Данные из открытой вкладки «${targetTab?.title || "Браузер Chrome"}» (через ZiCode Chrome Bridge v2.5)\n\n` +
         (targetTab?.content
           ? `#### 📬 Извлечённые письма, заголовки и содержимое всех фреймов вкладки:\n${enrichTabEmailContent(targetTab).slice(0, 8000)}\n\n`
-          : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.7.0** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
+          : `⚠️ Вкладка **«${targetTab?.title}»** открыта (\`${targetTab?.url}\`), но для чтения вложенных фреймов Kerio Connect обновите расширение Chrome до **v2.7.1** и нажмите **«🔄 Синхронизировать открытые вкладки сейчас»**.\n\n`) +
         `#### Список всех открытых вкладок (${freshBrowserTabs.length}):\n${tabsBulletList}\n\n` +
         `💡 Вы также можете написать: *«Ответь от моего имени отправителю [Имя]: [текст ответа]»* — и агент сам нажмёт «Ответить» во вкладке почты и введёт/отправит сообщение!`
 
@@ -1308,7 +1308,7 @@ async function runAutonomousLocalOpenCodeAgent(params: {
       ? `### 🌐 Открытые страницы вашего браузера Chrome\n\n${listRes.output}\n\n---\n\n#### 📄 Содержимое активной страницы:\n${activeRes.output.slice(0, 3500)}`
       : `### 🌐 Подключение к Google Chrome (ZiCode Browser Bridge v2.5)\n\n` +
         `Чтобы я видел все открытые вкладки и читал письма/страницы в реальном времени:\n` +
-        `1. Скачайте архив расширения [**ZiCode-Chrome-Extension-v2.7.0.zip**](https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.0/ZiCode-Chrome-Extension-v2.7.0.zip) и распакуйте его.\n` +
+        `1. Скачайте архив расширения [**ZiCode-Chrome-Extension-v2.7.1.zip**](https://github.com/zigorminsk-debug/zicode/releases/download/v2.7.1/ZiCode-Chrome-Extension-v2.7.1.zip) и распакуйте его.\n` +
         `2. Откройте в браузере \`chrome://extensions\`, включите **«Режим разработчика»** и нажмите **«Загрузить распакованное расширение»**.\n` +
         `3. Нажмите на иконку **ZiCode Chrome Bridge** → **«🔄 Синхронизировать открытые вкладки сейчас»**.`
     onUpdate({ content, reasoning: "", toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })
