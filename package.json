@@ -1,6 +1,6 @@
 {
   "name": "zicode",
-  "version": "2.3.0",
+  "version": "2.4.1",
   "description": "ZiCode — Full-featured OpenCode AI Coding Agent for Android and Windows with 100% OpenCode free models & functionality",
   "main": "electron/main.cjs",
   "author": "ZiCode Open Source (OpenCode Compatible)",

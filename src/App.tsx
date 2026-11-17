@@ -1489,7 +1489,7 @@ export function App() {
                     <code className="mono">ANDROID_KEYSTORE_BASE64</code>.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Android-v2.3.0-Signed-Release.apk"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Android-v2.4.1-Signed-Release.apk"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1530,7 +1530,7 @@ export function App() {
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Setup-2.3.0-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Setup-2.4.1-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1549,7 +1549,7 @@ export function App() {
                       <Download size={12} /> Скачать Setup .exe
                     </a>
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Portable-2.3.0-x64.exe"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Portable-2.4.1-x64.exe"
                       target="_blank"
                       rel="noreferrer"
                       style={{
@@ -1588,7 +1588,7 @@ export function App() {
                     Позволяет ZiCode видеть открытые вкладки вашего браузера и читать текст страниц в реальном времени.
                   </div>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Chrome-Extension-v2.3.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Chrome-Extension-v2.4.1.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -1837,7 +1837,13 @@ export function App() {
                               }}
                             >
                               <span>
-                                🔧 <strong>{tc.name}</strong>({JSON.stringify(tc.args).slice(0, 90)})
+                                🔧 <strong>{tc.name}</strong>(
+                                {tc.args?.filePath
+                                  ? `"${tc.args.filePath}"${tc.args.content ? `, ${String(tc.args.content).length} симв.` : ""}`
+                                  : JSON.stringify(tc.args).length > 85
+                                    ? `${JSON.stringify(tc.args).slice(0, 85)}…`
+                                    : JSON.stringify(tc.args)}
+                                )
                               </span>
                               <span
                                 style={{
@@ -2117,7 +2123,7 @@ export function App() {
                 </div>
                 <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <a
-                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Chrome-Extension-v2.3.0.zip"
+                    href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Chrome-Extension-v2.4.1.zip"
                     target="_blank"
                     rel="noreferrer"
                     style={{
@@ -2177,12 +2183,12 @@ export function App() {
                   <li>
                     Скачайте архив{" "}
                     <a
-                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.3.0/ZiCode-Chrome-Extension-v2.3.0.zip"
+                      href="https://github.com/zigorminsk-debug/zicode/releases/download/v2.4.1/ZiCode-Chrome-Extension-v2.4.1.zip"
                       target="_blank"
                       rel="noreferrer"
                       style={{ color: "var(--accent)" }}
                     >
-                      ZiCode-Chrome-Extension-v2.3.0.zip
+                      ZiCode-Chrome-Extension-v2.4.1.zip
                     </a>{" "}
                     и распакуйте его в любую папку на компьютере (или используйте папку <code>chrome-extension/</code> из
                     репозитория).

@@ -230,6 +230,84 @@ async function sendInferenceHttp(
   return parsed
 }
 
+function mapToOpenCodeFreeModelId(modelId: string): string {
+  const lower = modelId.toLowerCase()
+  if (lower.includes("deepseek")) return "deepseek-v4.1-flash-free"
+  if (lower.includes("glm")) return "glm-5.3-flash-free"
+  if (lower.includes("mimo")) return "mimo-v2.6-flash-free"
+  if (lower.includes("nemotron") && lower.includes("vl")) return "nemotron-3.5-super-vl-free"
+  if (lower.includes("nemotron") && lower.includes("lightning")) return "nemotron-3.5-lightning-free"
+  if (lower.includes("nemotron")) return "nemotron-3-ultra-free"
+  if (lower.includes("flint")) return "flint-40b-free"
+  if (lower.includes("beam")) return "beam-free"
+  if (lower.includes("longcat")) return "longcat-2.5-free"
+  if (lower.includes("inkling")) return "inkling-2-small-free"
+  if (lower.includes("iceman")) return "iceman-free"
+  if (lower.includes("hy4")) return "hy4-flash-free"
+  return "big-pickle"
+}
+
+function sanitizeMessagesForRoute(apiMessages: any[], sendTools: boolean): any[] {
+  if (sendTools) {
+    return apiMessages.map((m) => {
+      if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+        return {
+          role: "assistant",
+          content: typeof m.content === "string" && m.content.length > 0 ? m.content : null,
+          tool_calls: m.tool_calls.map((tc: any) => ({
+            id: tc.id,
+            type: "function",
+            function: {
+              name: tc.function?.name || "read",
+              arguments:
+                typeof tc.function?.arguments === "string"
+                  ? tc.function.arguments
+                  : JSON.stringify(tc.function?.arguments || {}),
+            },
+          })),
+        }
+      }
+      if (m.role === "tool") {
+        return {
+          role: "tool",
+          tool_call_id: m.tool_call_id,
+          content: String(m.content || ""),
+        }
+      }
+      return {
+        role: m.role,
+        content: String(m.content || ""),
+      }
+    })
+  }
+
+  // When sendTools === false (or when retrying after a gateway rejects multi-turn role:"tool" messages),
+  // convert tool_calls and role:"tool" into clean standard user/assistant messages so the LLM always sees tool outputs!
+  const flattened: any[] = []
+  for (const m of apiMessages) {
+    if (m.role === "assistant" && Array.isArray(m.tool_calls) && m.tool_calls.length > 0) {
+      const callsDesc = m.tool_calls
+        .map((tc: any) => `${tc.function?.name}(${tc.function?.arguments || "{}"})`)
+        .join("; ")
+      flattened.push({
+        role: "assistant",
+        content: (m.content ? `${m.content}\n` : "") + `[Вызван инструмент агента: ${callsDesc}]`,
+      })
+    } else if (m.role === "tool") {
+      flattened.push({
+        role: "user",
+        content: `[Результат выполнения инструмента (${m.tool_call_id || "tool"})]:\n${String(m.content || "")}\n\nПродолжи выполнение задачи пользователя и дай подробный, развёрнутый итоговый ответ (с полным кодом и инструкциями).`,
+      })
+    } else {
+      flattened.push({
+        role: m.role,
+        content: String(m.content || ""),
+      })
+    }
+  }
+  return flattened
+}
+
 async function tryFreeGatewayCompletion(
   session: SessionInfo,
   provider: ProviderInfo,
@@ -242,8 +320,17 @@ async function tryFreeGatewayCompletion(
   temperature: number,
 ): Promise<any> {
   const headers = buildOpenCodeHeaders(session, provider, model, apiKey)
+  const openCodeFreeHeaders = buildOpenCodeHeaders(
+    session,
+    { ...provider, id: "opencode" },
+    model,
+    "public",
+  )
 
-  // Candidate routes: OpenCode SSE protocol (stream:true + max_completion_tokens) -> standard JSON -> Zen -> Free fallback
+  const hasPreviousToolMessages = apiMessages.some(
+    (m) => m.role === "tool" || (Array.isArray(m.tool_calls) && m.tool_calls.length > 0),
+  )
+
   const isPublicFree = !apiKey || apiKey === "public"
   const candidateRoutes: {
     url: string
@@ -260,38 +347,72 @@ async function tryFreeGatewayCompletion(
         ? `${baseURL}/responses`
         : `${baseURL}/chat/completions`
 
-  candidateRoutes.push({
-    url: primaryEndpoint,
-    headers,
-    modelName: model.id,
-    sendTools: enableTools,
-    streamMode: true,
-  })
-
-  candidateRoutes.push({
-    url: primaryEndpoint,
-    headers,
-    modelName: model.id,
-    sendTools: enableTools,
-    streamMode: false,
-  })
-
-  if (provider.id === "opencode") {
+  // Only hit a third-party provider's paid endpoint directly if the user actually configured an API key for it (or if it is opencode)
+  if (provider.id === "opencode" || (apiKey && apiKey !== "public")) {
     candidateRoutes.push({
-      url: "https://opencode.ai/zen/v1/chat/completions",
+      url: primaryEndpoint,
       headers,
       modelName: model.id,
-      sendTools: false,
+      sendTools: enableTools,
       streamMode: true,
+    })
+
+    if (hasPreviousToolMessages) {
+      // Also add a flattened-message fallback on the primary endpoint in case multi-turn tool_call_id fails
+      candidateRoutes.push({
+        url: primaryEndpoint,
+        headers,
+        modelName: model.id,
+        sendTools: false,
+        streamMode: true,
+      })
+    }
+
+    candidateRoutes.push({
+      url: primaryEndpoint,
+      headers,
+      modelName: model.id,
+      sendTools: enableTools,
+      streamMode: false,
     })
   }
 
+  // If the user selected a model from another provider (e.g. nvidia/deepseek-v4.1-flash) without entering a paid key,
+  // automatically route through OpenCode Free (`apiKey: "public"`) with the matching free model!
   if (isPublicFree) {
+    const mappedFreeModel = provider.id === "opencode" ? model.id : mapToOpenCodeFreeModelId(model.id)
+    if (provider.id !== "opencode") {
+      candidateRoutes.push({
+        url: "https://opencode.ai/inference/openai/v1/chat/completions",
+        headers: openCodeFreeHeaders,
+        modelName: mappedFreeModel,
+        sendTools: enableTools,
+        streamMode: true,
+      })
+      if (hasPreviousToolMessages) {
+        candidateRoutes.push({
+          url: "https://opencode.ai/inference/openai/v1/chat/completions",
+          headers: openCodeFreeHeaders,
+          modelName: mappedFreeModel,
+          sendTools: false,
+          streamMode: true,
+        })
+      }
+    }
+
+    candidateRoutes.push({
+      url: "https://opencode.ai/zen/v1/chat/completions",
+      headers: openCodeFreeHeaders,
+      modelName: mappedFreeModel,
+      sendTools: false,
+      streamMode: true,
+    })
+
     candidateRoutes.push({
       url: "https://text.pollinations.ai/openai",
       headers: { "Content-Type": "application/json" },
       modelName: "openai",
-      sendTools: enableTools,
+      sendTools: enableTools && !hasPreviousToolMessages,
       streamMode: false,
     })
     candidateRoutes.push({
@@ -306,18 +427,19 @@ async function tryFreeGatewayCompletion(
   let lastError: unknown = null
   for (const route of candidateRoutes) {
     try {
+      const routeMessages = sanitizeMessagesForRoute(apiMessages, route.sendTools)
       const payload: Record<string, any> =
         model.protocol === "messages" && route.url.endsWith("/messages")
           ? {
               model: route.modelName,
               max_tokens: Math.min(model.outputLimit || 4096, 4096),
               system: systemMessage,
-              messages: apiMessages.filter((m) => m.role !== "system"),
+              messages: routeMessages.filter((m) => m.role !== "system"),
               ...(route.streamMode ? { stream: true } : {}),
             }
           : {
               model: route.modelName,
-              messages: apiMessages,
+              messages: routeMessages,
               ...(route.sendTools ? { tools: OPENCODE_TOOL_SCHEMAS } : {}),
               ...(route.streamMode
                 ? {
@@ -482,17 +604,26 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
   // Try live OpenCode Zen / Provider API with multi-step tool loop (up to 4 iterations)
   try {
     for (let step = 0; step < 4; step++) {
-      const response = await tryFreeGatewayCompletion(
-        session,
-        provider,
-        model,
-        apiKey,
-        baseURL,
-        systemMessage,
-        apiMessages,
-        model.capabilities.tools,
-        agent.temperature ?? 0.2,
-      )
+      let response: any = null
+      try {
+        response = await tryFreeGatewayCompletion(
+          session,
+          provider,
+          model,
+          apiKey,
+          baseURL,
+          systemMessage,
+          apiMessages,
+          model.capabilities.tools && step < 3,
+          agent.temperature ?? 0.2,
+        )
+      } catch (stepErr) {
+        // If step >= 1 failed after tools were already executed on step 0, do not throw away step 0!
+        if (step > 0 && (toolCalls.length > 0 || finalContent)) {
+          break
+        }
+        throw stepErr
+      }
 
       const choice = response?.choices?.[0]?.message
       const anthropicContent = Array.isArray(response?.content) ? response.content : undefined
@@ -522,7 +653,11 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
           break
         }
 
-        apiMessages.push(choice)
+        apiMessages.push({
+          role: "assistant",
+          content: choice.content || null,
+          tool_calls: rawToolCalls,
+        })
 
         for (const tc of rawToolCalls) {
           const fnName = tc.function?.name ?? "read"
@@ -563,7 +698,7 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
 
           apiMessages.push({
             role: "tool",
-            tool_call_id: tc.id,
+            tool_call_id: record.id,
             content: execRes.output,
           })
         }
@@ -588,8 +723,45 @@ Active Model: ${model.name} (${provider.id}/${model.id})`
         })
         break
       } else {
+        if (step > 0 && (toolCalls.length > 0 || finalContent)) {
+          break
+        }
         throw new Error("Unexpected response structure")
       }
+    }
+
+    // If tools (like write / edit) were executed by the LLM and finalContent is empty, generate a summary with the created files & code!
+    if (!finalContent.trim() && toolCalls.length > 0) {
+      const writtenFiles = toolCalls
+        .filter((tc) => (tc.name === "write" || tc.name === "edit") && tc.args?.filePath)
+        .map((tc) => ({
+          path: String(tc.args.filePath),
+          content: String(tc.args.content || wrappedCtx.files[tc.args.filePath] || ""),
+        }))
+
+      if (writtenFiles.length > 0) {
+        finalContent =
+          `✅ Агент **${agent.name}** (модель **${model.name}**) создал/обновил следующие файлы в рабочей области:\n\n` +
+          writtenFiles
+            .map(
+              (f) =>
+                `### 📄 \`${f.path}\`\n*(Откройте вкладку **«Редактор»** или дерево файлов слева, чтобы редактировать этот файл)*\n\`\`\`\n${f.content.slice(0, 3500)}${
+                  f.content.length > 3500 ? "\n// ..." : ""
+                }\n\`\`\``,
+            )
+            .join("\n\n")
+      } else {
+        finalContent = toolCalls
+          .map((tc) => `### 🔧 \`${tc.name}\`\n\`\`\`text\n${(tc.output || "").slice(0, 2000)}\n\`\`\``)
+          .join("\n\n")
+      }
+      onUpdate({
+        content: finalContent,
+        reasoning: finalReasoning,
+        toolCalls: [...toolCalls],
+        question: latestQuestion,
+        artifact: latestArtifact,
+      })
     }
 
     // Zero-Refusal Safeguard: if Chrome tabs ARE synced, never allow any model to claim it lacks browser access
@@ -882,28 +1054,85 @@ async function runAutonomousLocalOpenCodeAgent(params: {
     }
   }
 
-  // 4. Default thorough exploration + response
-  await runTool("glob", { pattern: "**/*" })
-  const firstFile = Object.keys(toolCtx.files)[0] ?? "opencode.json"
-  await runTool("read", { filePath: firstFile, limit: 60 })
-  await runTool("lsp_diagnostics", {})
+  // 4. If tools were already executed on step 0, summarize the actual created/modified files or tool outputs
+  if (toolCalls.length > 0) {
+    const writtenFiles = toolCalls
+      .filter((tc) => (tc.name === "write" || tc.name === "edit") && tc.args?.filePath)
+      .map((tc) => ({
+        path: String(tc.args.filePath),
+        content: String(tc.args.content || toolCtx.files[tc.args.filePath] || ""),
+      }))
+
+    const content =
+      writtenFiles.length > 0
+        ? `✅ Агент **${agent.name}** (модель **${model.name}**) выполнил задачу и записал файлы в проект:\n\n` +
+          writtenFiles
+            .map(
+              (f) =>
+                `### 📄 \`${f.path}\`\n*(Файл добавлен в рабочую область — откройте вкладку **«Редактор»**, чтобы посмотреть или изменить код)*\n\`\`\`\n${f.content.slice(0, 3500)}${
+                  f.content.length > 3500 ? "\n// ..." : ""
+                }\n\`\`\``,
+            )
+            .join("\n\n")
+        : toolCalls
+            .map((tc) => `### 🔧 \`${tc.name}\`\n\`\`\`text\n${(tc.output || "").slice(0, 2000)}\n\`\`\``)
+            .join("\n\n")
+
+    onUpdate({ content, reasoning, toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })
+    return {
+      content,
+      reasoning,
+      toolCalls,
+      question: getQuestion(),
+      artifact: getArtifact(),
+      tokensIn: 320,
+      tokensOut: 240,
+      costUsd: 0,
+    }
+  }
+
+  // 5. Try one clean stateless text generation before showing offline notice
+  try {
+    const simpleRes = await sendInferenceHttp(
+      "https://text.pollinations.ai/openai",
+      { "Content-Type": "application/json" },
+      {
+        model: "openai",
+        messages: [
+          {
+            role: "system",
+            content: `${agent.systemPrompt}\nОтвечай подробно на русском языке. Если пользователь просит написать код или приложение, приведи полный готовый код.`,
+          },
+          { role: "user", content: userPrompt },
+        ],
+      },
+    )
+    const simpleText = simpleRes?.choices?.[0]?.message?.content
+    if (simpleText && typeof simpleText === "string" && simpleText.trim()) {
+      onUpdate({
+        content: simpleText,
+        reasoning,
+        toolCalls: [...toolCalls],
+        question: getQuestion(),
+        artifact: getArtifact(),
+      })
+      return {
+        content: simpleText,
+        reasoning,
+        toolCalls,
+        question: getQuestion(),
+        artifact: getArtifact(),
+        tokensIn: 250,
+        tokensOut: Math.max(100, Math.round(simpleText.length / 3.5)),
+        costUsd: 0,
+      }
+    }
+  } catch {}
 
   const content =
-    agent.id === "plan"
-      ? `### Архитектурный план (Режим \`PLAN\` · ${model.name})\n\n` +
-        `Я изучил рабочую область проекта (${Object.keys(toolCtx.files).length} файлов) в режиме только для чтения.\n\n` +
-        `1. **Анализ текущих файлов**: Проверены \`${firstFile}\` и конфигурация \`opencode.json\`.\n` +
-        `2. **План действий по запросу** («*${userPrompt.slice(0, 100)}*»):\n` +
-        `   - Использовать инструменты \`read\`, \`glob\`, \`grep\` для локализации точек изменений.\n` +
-        `   - Переключиться в режим **Build** клавишей \`Tab\`.\n` +
-        `   - Применить изменения через \`edit\` / \`write\` / \`patch\` и проверить тестами через \`bash\`.`
-      : `### Выполнено (${model.name} · \`${provider.id}/${model.id}\` · FREE $0)\n\n` +
-        `Я проанализировал рабочую область (${Object.keys(toolCtx.files).length} файлов) и выполнил диагностику по вашему запросу:\n\n` +
-        `> ${userPrompt.slice(0, 160)}\n\n` +
-        `- **Активный агент**: \`${agent.name}\` (переключение \`Build\` ↔ \`Plan\` по клавише \`Tab\`)\n` +
-        `- **Активная модель**: \`${model.name}\` (\`${provider.id}\`, стоимость: **$0.00 / Free**)\n` +
-        `- **Инструменты**: Выполнены \`glob\`, \`read\` (\`${firstFile}\`) и \`lsp_diagnostics\`.\n\n` +
-        `Напишите, какой файл создать или отредактировать (например: *«Создай файл src/utils/math.ts»*), используйте \`@имя_файла\` для прикрепления файла, \`!команда\` для прямого выполнения в терминале или слэш-команды \`/init\`, \`/review\`, \`/undo\`, \`/redo\`, \`/models\`, \`/themes\`.`
+    `⚠️ **Не удалось связаться с облачным сервером ИИ (${provider.name} / ${model.name})**.\n\n` +
+    `Проверьте подключение к интернету или выберите модель из группы **OpenCode Free** (например, **Big Pickle**, **Beam Free**, **DeepSeek V4.1 Flash Free**, **GLM-5.3-Flash Free**) в меню **«⚙️ Меню / Модели»**.\n\n` +
+    `Если вы выбрали стороннего провайдера (\`${provider.id}\`), убедитесь, что для него указан API-ключ в разделе **«Провайдеры»**, либо переключитесь на бесплатный пул **OpenCode Free** (\`$0.00 / apiKey: "public"\`).`
 
   onUpdate({ content, reasoning, toolCalls: [...toolCalls], question: getQuestion(), artifact: getArtifact() })
   return {
@@ -912,8 +1141,8 @@ async function runAutonomousLocalOpenCodeAgent(params: {
     toolCalls,
     question: getQuestion(),
     artifact: getArtifact(),
-    tokensIn: 290,
-    tokensOut: 185,
+    tokensIn: 120,
+    tokensOut: 95,
     costUsd: 0,
   }
 }
